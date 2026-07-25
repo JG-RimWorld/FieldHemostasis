@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Defs>
+  <JobDef>
+    <defName>FH_ApplyHemostasis</defName>
+    <driverClass>FieldHemostasis.JobDriver_ApplyHemostasis</driverClass>
+    <reportString>applying field hemostasis to TargetA.</reportString>
+    <suspendable>false</suspendable>
+  </JobDef>
+</Defs>

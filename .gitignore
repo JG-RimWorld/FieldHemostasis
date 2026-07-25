@@ -1,0 +1,7 @@
+Assemblies/*
+!Assemblies/.gitkeep
+Source/bin/
+Source/obj/
+.vs/
+*.user
+*.suo

@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a reproducible problem with Field Hemostasis
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: input
+    id: rimworld_version
+    attributes:
+      label: RimWorld version
+      placeholder: "1.6.x"
+    validations:
+      required: true
+  - type: input
+    id: mod_version
+    attributes:
+      label: Field Hemostasis version
+      placeholder: "0.1.0 or commit SHA"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem
+      description: Describe what happened and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Select...
+        2. Right-click...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Include the first relevant red error and its complete stack trace.
+      render: text
+  - type: textarea
+    id: mod_list
+    attributes:
+      label: Mod list
+      description: Include the mod list and load order when compatibility may be involved.

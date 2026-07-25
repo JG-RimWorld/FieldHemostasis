@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ModMetaData>
+  <name>Stop the Bleeding! – Field Hemostasis</name>
+  <author>JG</author>
+  <packageId>jg.fieldhemostasis</packageId>
+  <modVersion>0.1.0</modVersion>
+  <url>https://github.com/JG-RimWorld/FieldHemostasis</url>
+  <supportedVersions>
+    <li>1.6</li>
+  </supportedVersions>
+  <modDependencies>
+    <li>
+      <packageId>brrainz.harmony</packageId>
+      <displayName>Harmony</displayName>
+      <steamWorkshopUrl>steam://url/CommunityFilePage/2009463077</steamWorkshopUrl>
+      <downloadUrl>https://github.com/pardeike/HarmonyRimWorld/releases/latest</downloadUrl>
+    </li>
+  </modDependencies>
+  <loadAfter>
+    <li>brrainz.harmony</li>
+  </loadAfter>
+  <description>Temporarily stop a pawn's bleeding without tending their wounds or using medicine. Application time scales with Medical Tend Speed. Hemostasis duration can be fixed or sampled from a normal distribution.</description>
+</ModMetaData>

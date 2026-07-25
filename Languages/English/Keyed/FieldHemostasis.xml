@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LanguageData>
+  <FH_ApplyHemostasis>Apply field hemostasis to {0}</FH_ApplyHemostasis>
+  <FH_NoManipulation>Cannot apply field hemostasis: {0} cannot manipulate.</FH_NoManipulation>
+  <FH_Downed>Cannot apply field hemostasis: {0} is downed.</FH_Downed>
+  <FH_MentalState>Cannot apply field hemostasis: {0} is in a mental state.</FH_MentalState>
+  <FH_CannotReach>Cannot apply field hemostasis: {0} cannot reach {1}.</FH_CannotReach>
+  <FH_TargetReserved>Cannot apply field hemostasis: {0} is reserved by another pawn.</FH_TargetReserved>
+  <FH_OneSourceStabilized>Field hemostasis applied to {0}: one bleeding wound stabilized.</FH_OneSourceStabilized>
+  <FH_MultipleSourcesStabilized>Field hemostasis applied to {0}: {1} bleeding wounds stabilized.</FH_MultipleSourcesStabilized>
+</LanguageData>

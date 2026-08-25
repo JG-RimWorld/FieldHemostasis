@@ -1,0 +1,53 @@
+name: Build RotR Wedding Fix
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'tools/rotr-wedding-fix-build/**'
+      - '.github/workflows/rotr-wedding-fix-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build patch
+        shell: pwsh
+        run: |
+          $project = 'tools/rotr-wedding-fix-build/RotRWeddingFix/RotRWeddingFix.csproj'
+          $out = 'tools/rotr-wedding-fix-build/buildout'
+          dotnet restore $project
+          dotnet build $project --configuration Release --no-restore --output $out
+
+      - name: Package RimWorld mod
+        shell: pwsh
+        run: |
+          $root = 'tools/rotr-wedding-fix-build'
+          $mod = Join-Path $root 'Mod'
+          $assemblies = Join-Path $mod '1.6/Assemblies'
+          New-Item -ItemType Directory -Force -Path $assemblies | Out-Null
+          Copy-Item (Join-Path $root 'buildout/RotRWeddingFix.dll') (Join-Path $assemblies 'RotRWeddingFix.dll') -Force
+          $zip = Join-Path $root 'RomanceOnTheRim-WeddingFix.zip'
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path (Join-Path $mod '*') -DestinationPath $zip
+
+      - name: Upload mod
+        uses: actions/upload-artifact@v4
+        with:
+          name: RomanceOnTheRim-WeddingFix
+          path: tools/rotr-wedding-fix-build/RomanceOnTheRim-WeddingFix.zip
+          if-no-files-found: error

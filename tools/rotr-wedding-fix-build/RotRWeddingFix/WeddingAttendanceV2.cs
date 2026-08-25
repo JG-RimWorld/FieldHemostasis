@@ -53,7 +53,7 @@ namespace JG.RotRWeddingFix
             }
             catch (Exception ex)
             {
-                Log.ErrorOnce("[RotR Wedding Fix] Could not synchronize wedding progress: " + ex, 193746201);
+                Log.Error("[RotR Wedding Fix] Could not synchronize wedding progress: " + ex);
             }
         }
     }

@@ -7,14 +7,12 @@ using Verse;
 
 namespace JG.RotRWeddingFix
 {
-    // RotR's four custom StageEndTrigger classes do not opt into vanilla ritual
-    // progress. The ceremony itself advances through those custom triggers, but
-    // LordJob_Ritual.ticksPassedWithProgress therefore remains zero forever.
-    // Keep the vanilla progress clock in sync with the real elapsed wedding time.
-    // This fixes the permanently frozen "4 hours remaining" report and also
-    // repairs old in-progress saves on their first tick after loading.
+    // RotR advances its wedding through custom stage triggers, but those triggers
+    // do not count toward vanilla ritual progress. Patching LordJobTick did not
+    // affect RotR because its custom LordJob overrides that method. Patch the
+    // property used by the UI instead, without changing ritual completion logic.
     [HarmonyPatch]
-    internal static class WeddingProgressV3Patch
+    internal static class WeddingTicksLeftV4Patch
     {
         private static MethodBase TargetMethod()
         {
@@ -22,15 +20,16 @@ namespace JG.RotRWeddingFix
             if (ritualType == null)
                 throw new MissingMemberException("RimWorld.LordJob_Ritual was not found.");
 
-            MethodInfo method = AccessTools.Method(ritualType, "LordJobTick");
-            if (method == null)
-                throw new MissingMethodException("LordJob_Ritual.LordJobTick was not found.");
+            MethodInfo getter = AccessTools.PropertyGetter(ritualType, "TicksLeft");
+            if (getter == null)
+                throw new MissingMethodException("LordJob_Ritual.TicksLeft getter was not found.");
 
-            return method;
+            return getter;
         }
 
         [HarmonyPostfix]
-        private static void Postfix(object __instance)
+        [HarmonyPriority(Priority.Last)]
+        private static void Postfix(object __instance, ref int __result)
         {
             if (!RotRCompat.IsWedding(__instance))
                 return;
@@ -38,33 +37,27 @@ namespace JG.RotRWeddingFix
             try
             {
                 FieldInfo elapsedField = RotRCompat.FindField(__instance.GetType(), "ticksPassed");
-                FieldInfo progressField = RotRCompat.FindField(__instance.GetType(), "ticksPassedWithProgress");
                 FieldInfo durationField = RotRCompat.FindField(__instance.GetType(), "durationTicks");
-                if (elapsedField == null || progressField == null || durationField == null)
+                if (elapsedField == null || durationField == null)
                     return;
 
                 int elapsed = Convert.ToInt32(elapsedField.GetValue(__instance));
                 int duration = Convert.ToInt32(durationField.GetValue(__instance));
-                float current = Convert.ToSingle(progressField.GetValue(__instance));
-                float corrected = duration > 0 ? Math.Min(elapsed, duration) : elapsed;
-
-                if (current < corrected)
-                    progressField.SetValue(__instance, corrected);
+                __result = Math.Max(0, duration - elapsed);
             }
             catch (Exception ex)
             {
-                Log.Error("[RotR Wedding Fix] Could not synchronize wedding progress: " + ex);
+                Log.Error("[RotR Wedding Fix] Could not calculate wedding time remaining: " + ex);
             }
         }
     }
 
     // RotR uses the vanilla RitualOutcomeComp_ParticipantCount in XML, but its
     // wedding outcome worker leaves that comp's own presentForTicks data empty.
-    // LordToil_Ritual, however, independently tracks real physical attendance in
-    // LordToilData_Gathering.presentForTicks every tick and serializes it correctly.
-    // Use that canonical ritual presence data for the final wedding quality.
+    // LordToil_Ritual independently tracks real physical attendance in
+    // LordToilData_Gathering.presentForTicks and serializes it correctly.
     [HarmonyPatch]
-    internal static class WeddingParticipantCountV3Patch
+    internal static class WeddingParticipantCountV4Patch
     {
         private static MethodBase TargetMethod()
         {
@@ -144,10 +137,6 @@ namespace JG.RotRWeddingFix
                     }
                 }
 
-                // Match vanilla semantics: a participant counts if physically present for
-                // at least half of the ritual. Use actual elapsed wedding time rather than
-                // RotR's nominal 10,000-tick duration, since its custom stages can finish
-                // independently of that nominal clock.
                 float requiredPresence = Math.Max(1f, elapsed / 2f);
                 MethodInfo countsMethod = AccessTools.Method(__instance.GetType(), "Counts");
                 if (countsMethod == null)
@@ -174,7 +163,7 @@ namespace JG.RotRWeddingFix
                     count = 30;
 
                 __result = count;
-                Log.Message("[RotR Wedding Fix] Wedding attendance v1.3: " + count +
+                Log.Message("[RotR Wedding Fix] Wedding attendance v1.4: " + count +
                             " participant(s) counted from " + tracked +
                             " physically tracked pawn(s); elapsed " + elapsed +
                             " ticks, longest attendance " + longest +
@@ -182,7 +171,7 @@ namespace JG.RotRWeddingFix
             }
             catch (Exception ex)
             {
-                Log.Error("[RotR Wedding Fix] Attendance v1.3 calculation failed: " + ex);
+                Log.Error("[RotR Wedding Fix] Attendance v1.4 calculation failed: " + ex);
             }
         }
     }

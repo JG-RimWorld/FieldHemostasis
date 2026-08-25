@@ -22,5 +22,5 @@
     <li>brrainz.harmony</li>
     <li>telardo.RomanceOnTheRim</li>
   </loadAfter>
-  <description>Compatibility fixes for Romance On The Rim 1.6 wedding ceremonies (v1.3 logic). Restores active weddings after save/load, repairs procession pairing serialization, synchronizes the frozen ritual time display, and calculates guest attendance from RimWorld's serialized LordToil presence data.</description>
+  <description>Compatibility fixes for Romance On The Rim 1.6 wedding ceremonies (v1.4 diagnostic build). Restores active weddings after save/load, repairs procession pairing serialization, calculates guest attendance from RimWorld's serialized LordToil presence data, fixes the frozen time-left display at its UI source, and logs the exact role/state when RotR ejects a wedding participant.</description>
 </ModMetaData>

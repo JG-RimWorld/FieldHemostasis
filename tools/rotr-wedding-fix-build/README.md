@@ -10,3 +10,5 @@ Current fixes:
 - Computes the final participant/guest quality from RimWorld's own serialized `LordToilData_Gathering.presentForTicks`, because RotR's wedding outcome worker leaves `RitualOutcomeComp_ParticipantCount` attendance data empty.
 
 The patch is deliberately restricted to `RomanceOnTheRim.LordJob_WeddingCeremony` and does not alter other rituals.
+
+Build target: v1.3.0.

@@ -22,5 +22,5 @@
     <li>brrainz.harmony</li>
     <li>telardo.RomanceOnTheRim</li>
   </loadAfter>
-  <description>Compatibility fixes for Romance On The Rim 1.6 weddings: restores active wedding LordJobs after save/load, rebuilds procession pairings lost by RotR serialization, and counts attendance against the actual ceremony duration instead of the fixed 10,000-tick ritual duration.</description>
+  <description>Compatibility fixes for Romance On The Rim 1.6 wedding ceremonies. Restores active weddings after save/load, repairs procession pairing serialization, synchronizes the frozen ritual time display, and calculates guest attendance from RimWorld's serialized LordToil presence data.</description>
 </ModMetaData>

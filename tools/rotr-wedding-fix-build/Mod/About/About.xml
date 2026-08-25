@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ModMetaData>
+  <name>Romance On The Rim - Wedding Fix</name>
+  <author>JG</author>
+  <packageId>jg.rotr.weddingfix</packageId>
+  <supportedVersions>
+    <li>1.6</li>
+  </supportedVersions>
+  <modDependencies>
+    <li>
+      <packageId>brrainz.harmony</packageId>
+      <displayName>Harmony</displayName>
+      <steamWorkshopUrl>steam://url/CommunityFilePage/2009463077</steamWorkshopUrl>
+    </li>
+    <li>
+      <packageId>telardo.RomanceOnTheRim</packageId>
+      <displayName>Romance On The Rim</displayName>
+      <steamWorkshopUrl>steam://url/CommunityFilePage/2654432921</steamWorkshopUrl>
+    </li>
+  </modDependencies>
+  <loadAfter>
+    <li>brrainz.harmony</li>
+    <li>telardo.RomanceOnTheRim</li>
+  </loadAfter>
+  <description>Compatibility fix for Romance On The Rim 1.6 wedding ceremonies. Restores LordJob_WeddingCeremony correctly when loading a save made during an active wedding, preventing the broken NULL LordJob / LordDuty cascade.</description>
+</ModMetaData>

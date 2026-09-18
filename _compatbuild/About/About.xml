@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ModMetaData>
+  <name>AASB II - VPE Skipdoor Pathing Redux Compat</name>
+  <author>JG</author>
+  <packageId>jg.aasb.skipdoorcompat</packageId>
+  <supportedVersions>
+    <li>1.6</li>
+  </supportedVersions>
+  <description>Compatibility patch for As above, So below II and VPE Skipdoor Pathing Redux. Lets cross-level routes use skipdoors when Redux finds them cheaper than AASB's stair route, while retaining AASB stairs as fallback.</description>
+  <modDependencies>
+    <li><packageId>brrainz.harmony</packageId><displayName>Harmony</displayName></li>
+    <li><packageId>astryl.AsAboveSoBelow2</packageId><displayName>As above, So below II</displayName></li>
+    <li><packageId>yahvk.vpeskipdoorpathingredux</packageId><displayName>VPE Skipdoor Pathing Redux</displayName></li>
+  </modDependencies>
+  <loadAfter>
+    <li>astryl.AsAboveSoBelow2</li>
+    <li>yahvk.vpeskipdoorpathingredux</li>
+  </loadAfter>
+</ModMetaData>

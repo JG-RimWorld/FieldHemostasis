@@ -1,0 +1,44 @@
+name: Build AASB Skipdoor Compat
+
+on:
+  push:
+    branches:
+      - build/aasb-skipdoor-compat
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore _compatbuild/Source/AASBSkipdoorCompat.csproj
+
+      - name: Build release
+        run: dotnet build _compatbuild/Source/AASBSkipdoorCompat.csproj --configuration Release --no-restore
+
+      - name: Assemble mod
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force _compatbuild/package/AASB-Skipdoor-Compat/About | Out-Null
+          New-Item -ItemType Directory -Force _compatbuild/package/AASB-Skipdoor-Compat/1.6/Assemblies | Out-Null
+          Copy-Item _compatbuild/About/About.xml _compatbuild/package/AASB-Skipdoor-Compat/About/About.xml
+          Copy-Item _compatbuild/README.md _compatbuild/package/AASB-Skipdoor-Compat/README.md
+          Copy-Item _compatbuild/1.6/Assemblies/AASBSkipdoorCompat.dll _compatbuild/package/AASB-Skipdoor-Compat/1.6/Assemblies/AASBSkipdoorCompat.dll
+
+      - name: Upload compiled mod
+        uses: actions/upload-artifact@v4
+        with:
+          name: AASB-Skipdoor-Compat
+          path: _compatbuild/package/AASB-Skipdoor-Compat
+          if-no-files-found: error

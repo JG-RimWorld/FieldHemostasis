@@ -9,3 +9,7 @@ For a route that AASB would otherwise segment, the patch probes the real Redux p
 
 ## v0.1.1
 Fixes Harmony target resolution against AASB's overloaded CrossBand method and pins all compatibility hooks to exact signatures. Adds route-choice diagnostics for player-controlled colonists.
+
+
+## v0.1.2
+Keeps skipdoor route permits across normal 1.6 path retries, keys them by pawn + destination instead of exact start cell, and explicitly carries the bypass through PathFinder.PushRequest/FindPathNow so AASB cannot re-reject a route already chosen for Redux.

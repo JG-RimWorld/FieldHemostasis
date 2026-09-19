@@ -17,6 +17,7 @@ namespace AASBSkipdoorCompat
         {
             var harmony = new Harmony(content.PackageIdPlayerFacing);
             harmony.PatchAll();
+            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.1.1.");
             LongEventHandler.ExecuteWhenFinished(CompatReflection.Initialize);
         }
     }
@@ -139,8 +140,10 @@ namespace AASBSkipdoorCompat
             initialized = true;
 
             Type pathUtils = AccessTools.TypeByName("VPE_Skipdoor_Pathing.PathfindingUtils");
-            canUseTeleporters = AccessTools.Method(pathUtils, "CanUseTeleporters");
-            getAllTeleporters = AccessTools.Method(pathUtils, "GetAllTeleporters");
+            canUseTeleporters = AccessTools.Method(pathUtils, "CanUseTeleporters",
+                new[] { typeof(Pawn), typeof(LocalTargetInfo) });
+            getAllTeleporters = AccessTools.Method(pathUtils, "GetAllTeleporters",
+                new[] { typeof(Map) });
 
             Type wormhole = AccessTools.TypeByName("AsAboveSoBelow.ABWormhole");
             if (wormhole != null)
@@ -250,23 +253,48 @@ namespace AASBSkipdoorCompat
             CompatReflection.Initialize();
             if (!CompatReflection.Ready || !CompatReflection.IsBanded(pawn.Map))
                 return false;
-            if (!CompatReflection.CanUseSkipdoors(pawn, dest))
+
+            // Only compete on journeys AASB can actually segment through a vertical link.
+            // Same-band travel remains entirely Redux's responsibility.
+            float stairCost;
+            if (!TryStairRouteCost(pawn, dest, peMode, out stairCost))
                 return false;
+
+            if (!CompatReflection.CanUseSkipdoors(pawn, dest))
+            {
+                TraceDecision(pawn, "AASB stair route cost " + stairCost.ToString("0.0")
+                    + "; Redux says this pawn/job cannot use skipdoors.");
+                return false;
+            }
 
             HashSet<IntVec3> skipdoors = CompatReflection.GetSkipdoors(pawn.Map);
             if (skipdoors.Count < 2)
+            {
+                TraceDecision(pawn, "AASB stair route cost " + stairCost.ToString("0.0")
+                    + "; fewer than two usable skipdoors found.");
                 return false;
+            }
 
             float skipCost;
             if (!TryPathCost(pawn, pawn.Position, dest, peMode, skipdoors,
                     allowSkipdoors: true, bypassCrossBand: true, requireTeleport: true, out skipCost))
+            {
+                TraceDecision(pawn, "AASB stair route cost " + stairCost.ToString("0.0")
+                    + "; Redux cross-band probe found no valid skipdoor route.");
                 return false;
+            }
 
-            float stairCost;
-            if (!TryStairRouteCost(pawn, dest, peMode, out stairCost))
-                return true;
+            bool useSkipdoor = skipCost <= stairCost + 0.05f;
+            TraceDecision(pawn, "route to " + dest.Cell + ": skipdoor "
+                + skipCost.ToString("0.0") + " vs stairs " + stairCost.ToString("0.0")
+                + " -> " + (useSkipdoor ? "SKIPDOOR" : "STAIRS"));
+            return useSkipdoor;
+        }
 
-            return skipCost <= stairCost + 0.05f;
+        private static void TraceDecision(Pawn pawn, string message)
+        {
+            if (pawn != null && pawn.IsColonistPlayerControlled)
+                Log.Message("[AASB Skipdoor Compat] " + pawn.LabelShort + ": " + message);
         }
 
         private static bool TryStairRouteCost(Pawn pawn, LocalTargetInfo dest, PathEndMode peMode,
@@ -388,7 +416,12 @@ namespace AASBSkipdoorCompat
         private static MethodBase TargetMethod()
         {
             Type t = AccessTools.TypeByName("AsAboveSoBelow.ABWormholePather");
-            return AccessTools.Method(t, "TrySegment");
+            return AccessTools.Method(t, "TrySegment", new[]
+            {
+                typeof(Pawn),
+                typeof(LocalTargetInfo).MakeByRefType(),
+                typeof(PathEndMode).MakeByRefType()
+            });
         }
 
         [HarmonyPriority(Priority.First)]
@@ -418,7 +451,13 @@ namespace AASBSkipdoorCompat
         private static MethodBase TargetMethod()
         {
             Type t = AccessTools.TypeByName("AsAboveSoBelow.ABPathBandScope");
-            return AccessTools.Method(t, "CrossBand");
+            return AccessTools.Method(t, "CrossBand", new[]
+            {
+                typeof(Map),
+                typeof(IntVec3),
+                typeof(LocalTargetInfo),
+                typeof(string).MakeByRefType()
+            });
         }
 
         [HarmonyPriority(Priority.First)]
@@ -440,7 +479,11 @@ namespace AASBSkipdoorCompat
         private static MethodBase TargetMethod()
         {
             Type t = AccessTools.TypeByName("AsAboveSoBelow.ABPathBandScope");
-            return AccessTools.Method(t, "ScopeDoorJob");
+            return AccessTools.Method(t, "ScopeDoorJob", new[]
+            {
+                typeof(PathGridDoorsBlockedJob),
+                typeof(PathRequest)
+            });
         }
 
         [HarmonyPriority(Priority.First)]
@@ -456,7 +499,8 @@ namespace AASBSkipdoorCompat
         private static MethodBase TargetMethod()
         {
             Type t = AccessTools.TypeByName("VPE_Skipdoor_Pathing.PathfindingUtils");
-            return AccessTools.Method(t, "CanUseTeleporters");
+            return AccessTools.Method(t, "CanUseTeleporters",
+                new[] { typeof(Pawn), typeof(LocalTargetInfo) });
         }
 
         [HarmonyPriority(Priority.First)]

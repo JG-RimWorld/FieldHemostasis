@@ -366,6 +366,14 @@ namespace AASBSkipdoorCompat
             if (pawn == null || !pawn.Spawned || pawn.Map == null || !dest.IsValid)
                 return false;
 
+            // FindPathNow may be reached while a save/map is still loading on the long-event
+            // thread. Redux allocates Native Temp containers there, which Unity rejects.
+            // Routing decisions are safe to defer until normal play resumes.
+            if (Scribe.mode != LoadSaveMode.Inactive
+                || LongEventHandler.AnyEventNowOrWaiting
+                || Current.ProgramState != ProgramState.Playing)
+                return false;
+
             CompatReflection.Initialize();
             if (!CompatReflection.Ready || !CompatReflection.IsBanded(pawn.Map))
                 return false;

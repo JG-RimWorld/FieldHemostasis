@@ -17,7 +17,7 @@ namespace AASBSkipdoorCompat
         {
             var harmony = new Harmony(content.PackageIdPlayerFacing);
             harmony.PatchAll();
-            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.1.2.");
+            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.2.0.");
             LongEventHandler.ExecuteWhenFinished(CompatReflection.Initialize);
         }
     }
@@ -133,6 +133,74 @@ namespace AASBSkipdoorCompat
         }
     }
 
+
+    internal sealed class SkipTransit
+    {
+        public Map Map;
+        public Thing Source;
+        public Thing Destination;
+        public LocalTargetInfo RealDestination;
+        public PathEndMode RealEndMode;
+        public Job Job;
+        public int ExpiresAtTick;
+    }
+
+    internal static class SkipTransits
+    {
+        private static readonly Dictionary<int, SkipTransit> pending =
+            new Dictionary<int, SkipTransit>();
+        private const int LifetimeTicks = 4000;
+
+        public static bool TryGet(Pawn pawn, out SkipTransit transit)
+        {
+            transit = null;
+            if (pawn == null)
+                return false;
+            Cleanup();
+            return pending.TryGetValue(pawn.thingIDNumber, out transit);
+        }
+
+        public static void Set(Pawn pawn, Thing source, Thing destination,
+            LocalTargetInfo realDestination, PathEndMode realEndMode)
+        {
+            if (pawn == null || pawn.Map == null || source == null || destination == null)
+                return;
+
+            int now = Find.TickManager != null ? Find.TickManager.TicksGame : 0;
+            pending[pawn.thingIDNumber] = new SkipTransit
+            {
+                Map = pawn.Map,
+                Source = source,
+                Destination = destination,
+                RealDestination = realDestination,
+                RealEndMode = realEndMode,
+                Job = pawn.CurJob,
+                ExpiresAtTick = now + LifetimeTicks
+            };
+        }
+
+        public static void Clear(Pawn pawn)
+        {
+            if (pawn != null)
+                pending.Remove(pawn.thingIDNumber);
+        }
+
+        private static void Cleanup()
+        {
+            int now = Find.TickManager != null ? Find.TickManager.TicksGame : 0;
+            var remove = new List<int>();
+            foreach (KeyValuePair<int, SkipTransit> kv in pending)
+            {
+                SkipTransit t = kv.Value;
+                if (t == null || t.Map == null || now > t.ExpiresAtTick
+                    || now + LifetimeTicks < t.ExpiresAtTick)
+                    remove.Add(kv.Key);
+            }
+            for (int i = 0; i < remove.Count; i++)
+                pending.Remove(remove[i]);
+        }
+    }
+
     internal static class CompatReflection
     {
         private static bool initialized;
@@ -140,9 +208,12 @@ namespace AASBSkipdoorCompat
         private static MethodInfo getAllTeleporters;
         private static MethodInfo tryGetTransit;
         private static MethodInfo bandsBanded;
+        private static MethodInfo bandsBandOf;
+        private static Type doorTeleporterType;
 
         public static bool Ready => initialized && canUseTeleporters != null && getAllTeleporters != null
-            && tryGetTransit != null && bandsBanded != null;
+            && tryGetTransit != null && bandsBanded != null && bandsBandOf != null
+            && doorTeleporterType != null;
 
         public static void Initialize()
         {
@@ -156,6 +227,8 @@ namespace AASBSkipdoorCompat
             getAllTeleporters = AccessTools.Method(pathUtils, "GetAllTeleporters",
                 new[] { typeof(Map) });
 
+            doorTeleporterType = AccessTools.TypeByName("VEF.Buildings.DoorTeleporter");
+
             Type wormhole = AccessTools.TypeByName("AsAboveSoBelow.ABWormhole");
             if (wormhole != null)
             {
@@ -166,16 +239,18 @@ namespace AASBSkipdoorCompat
 
             Type bands = AccessTools.TypeByName("AsAboveSoBelow.ABBands");
             bandsBanded = AccessTools.Method(bands, "Banded", new[] { typeof(Map) });
+            bandsBandOf = AccessTools.Method(bands, "BandOf", new[] { typeof(Map), typeof(IntVec3) });
 
             if (!Ready)
             {
                 Log.Warning("[AASB Skipdoor Compat] Could not resolve all integration methods. "
                     + "Patch will stay passive. AASB=" + (wormhole != null)
-                    + ", Redux=" + (pathUtils != null) + ".");
+                    + ", Redux=" + (pathUtils != null)
+                    + ", VEF=" + (doorTeleporterType != null) + ".");
             }
             else
             {
-                Log.Message("[AASB Skipdoor Compat] Integration active.");
+                Log.Message("[AASB Skipdoor Compat] Integration active v0.2.0.");
             }
         }
 
@@ -185,6 +260,31 @@ namespace AASBSkipdoorCompat
                 return false;
             try { return (bool)bandsBanded.Invoke(null, new object[] { map }); }
             catch { return false; }
+        }
+
+
+        public static int BandOf(Map map, IntVec3 cell)
+        {
+            if (bandsBandOf == null || map == null || !cell.IsValid)
+                return -1;
+            try { return (int)bandsBandOf.Invoke(null, new object[] { map, cell }); }
+            catch { return -1; }
+        }
+
+        public static Thing SkipdoorAt(Map map, IntVec3 cell)
+        {
+            if (map == null || doorTeleporterType == null || !cell.InBounds(map))
+                return null;
+
+            List<Thing> things = cell.GetThingList(map);
+            for (int i = 0; i < things.Count; i++)
+            {
+                Thing thing = things[i];
+                if (thing != null && thing.Spawned
+                    && doorTeleporterType.IsAssignableFrom(thing.GetType()))
+                    return thing;
+            }
+            return null;
         }
 
         public static bool CanUseSkipdoors(Pawn pawn, LocalTargetInfo dest)
@@ -255,9 +355,14 @@ namespace AASBSkipdoorCompat
     {
         private const float StairFlightCost = 7f;
         private const int MaxStairHops = 12;
+        [ThreadStatic] private static IntVec3 chosenJumpA;
+        [ThreadStatic] private static IntVec3 chosenJumpB;
 
-        public static bool ShouldUseSkipdoor(Pawn pawn, LocalTargetInfo dest, PathEndMode peMode)
+        public static bool TryChooseSkipdoor(Pawn pawn, LocalTargetInfo dest, PathEndMode peMode,
+            out Thing source, out Thing destination)
         {
+            source = null;
+            destination = null;
             if (pawn == null || !pawn.Spawned || pawn.Map == null || !dest.IsValid)
                 return false;
 
@@ -295,10 +400,56 @@ namespace AASBSkipdoorCompat
                 return false;
             }
 
+            int pawnBand = CompatReflection.BandOf(pawn.Map, pawn.Position);
+            int bandA = CompatReflection.BandOf(pawn.Map, chosenJumpA);
+            int bandB = CompatReflection.BandOf(pawn.Map, chosenJumpB);
+
+            if (!chosenJumpA.IsValid || !chosenJumpB.IsValid || bandA < 0 || bandB < 0
+                || bandA == bandB)
+            {
+                TraceDecision(pawn, "Redux route used only same-band skipdoors; leaving cross-band travel to AASB.");
+                return false;
+            }
+
+            IntVec3 sourceCell;
+            IntVec3 destinationCell;
+            if (bandA == pawnBand)
+            {
+                sourceCell = chosenJumpA;
+                destinationCell = chosenJumpB;
+            }
+            else if (bandB == pawnBand)
+            {
+                sourceCell = chosenJumpB;
+                destinationCell = chosenJumpA;
+            }
+            else
+            {
+                TraceDecision(pawn, "Redux cross-band jump does not start in pawn's current band; leaving it to AASB.");
+                return false;
+            }
+
+            source = CompatReflection.SkipdoorAt(pawn.Map, sourceCell);
+            destination = CompatReflection.SkipdoorAt(pawn.Map, destinationCell);
+            if (source == null || destination == null)
+            {
+                TraceDecision(pawn, "Redux jump endpoints vanished before segmentation.");
+                source = null;
+                destination = null;
+                return false;
+            }
+
             bool useSkipdoor = skipCost <= stairCost + 0.05f;
-            TraceDecision(pawn, "route to " + dest.Cell + ": skipdoor "
+            TraceDecision(pawn, "route to " + dest.Cell + ": cross-band skipdoor "
+                + sourceCell + " [band " + pawnBand + "] -> " + destinationCell
+                + " [band " + CompatReflection.BandOf(pawn.Map, destinationCell) + "] cost "
                 + skipCost.ToString("0.0") + " vs stairs " + stairCost.ToString("0.0")
                 + " -> " + (useSkipdoor ? "SKIPDOOR" : "STAIRS"));
+            if (!useSkipdoor)
+            {
+                source = null;
+                destination = null;
+            }
             return useSkipdoor;
         }
 
@@ -361,6 +512,8 @@ namespace AASBSkipdoorCompat
             bool bypassCrossBand, bool requireTeleport, out float cost)
         {
             cost = 0f;
+            chosenJumpA = IntVec3.Invalid;
+            chosenJumpB = IntVec3.Invalid;
             bool oldBypass = CompatState.BypassCrossBandGuard;
             bool oldDisable = CompatState.DisableSkipdoors;
             CompatState.BypassCrossBandGuard = bypassCrossBand;
@@ -391,7 +544,14 @@ namespace AASBSkipdoorCompat
                             && skipdoors.Contains(a) && skipdoors.Contains(b);
                         if (skipJump)
                         {
-                            usedTeleport = true;
+                            int bandA = CompatReflection.BandOf(pawn.Map, a);
+                            int bandB = CompatReflection.BandOf(pawn.Map, b);
+                            if (bandA >= 0 && bandB >= 0 && bandA != bandB && !usedTeleport)
+                            {
+                                usedTeleport = true;
+                                chosenJumpA = a;
+                                chosenJumpB = b;
+                            }
                             sum += 1f;
                         }
                         else if (dx != 0 && dz != 0)
@@ -441,30 +601,146 @@ namespace AASBSkipdoorCompat
         {
             try
             {
-                if (RoutePermits.Matches(pawn, dest))
+                SkipTransit existing;
+                if (SkipTransits.TryGet(pawn, out existing))
                 {
-                    if (pawn != null && pawn.IsColonistPlayerControlled)
-                        Log.Message("[AASB Skipdoor Compat] " + pawn.LabelShort
-                            + ": reusing active SKIPDOOR permit for " + dest.Cell);
-                    __result = false;
-                    return false;
+                    bool sameJob = existing.Job == null || pawn.CurJob == existing.Job;
+                    bool ourLeg = sameJob && existing.Source != null && existing.Source.Spawned
+                        && dest.IsValid && dest.Cell.InHorDistOf(existing.Source.Position, 2f);
+                    if (ourLeg)
+                        return true;
+                    SkipTransits.Clear(pawn);
                 }
 
-                if (!RouteChooser.ShouldUseSkipdoor(pawn, dest, peMode))
+                Thing source;
+                Thing destination;
+                if (!RouteChooser.TryChooseSkipdoor(pawn, dest, peMode, out source, out destination))
                     return true;
 
-                RoutePermits.Add(pawn, dest);
-                __result = false;
-                return false;
+                LocalTargetInfo realDest = dest;
+                PathEndMode realMode = peMode;
+                SkipTransits.Set(pawn, source, destination, realDest, realMode);
+
+                dest = new LocalTargetInfo(source);
+                peMode = PathEndMode.Touch;
+
+                if (pawn != null && pawn.IsColonistPlayerControlled)
+                    Log.Message("[AASB Skipdoor Compat] " + pawn.LabelShort
+                        + ": segmented cross-band trip at skipdoor " + source.Position
+                        + " -> " + destination.Position + "; walking to source first.");
+
+                // AASB now sees only the local leg to the source skipdoor.
+                return true;
             }
             catch (Exception e)
             {
                 Log.Warning("[AASB Skipdoor Compat] Route choice failed; falling back to AASB: " + e);
+                SkipTransits.Clear(pawn);
                 return true;
             }
         }
     }
 
+
+
+    [HarmonyPatch(typeof(Pawn_PathFollower), "PatherArrived")]
+    internal static class Patch_PathFollower_ConsumeSkipTransit
+    {
+        [HarmonyPriority(Priority.First)]
+        private static bool Prefix(Pawn_PathFollower __instance, Pawn ___pawn)
+        {
+            try
+            {
+                return !TryConsume(__instance, ___pawn);
+            }
+            catch (Exception e)
+            {
+                Log.Warning("[AASB Skipdoor Compat] Explicit skipdoor transit failed: " + e);
+                SkipTransits.Clear(___pawn);
+                return true;
+            }
+        }
+
+        private static bool TryConsume(Pawn_PathFollower pather, Pawn pawn)
+        {
+            SkipTransit transit;
+            if (!SkipTransits.TryGet(pawn, out transit))
+                return false;
+
+            if (transit.Job != null && pawn.CurJob != transit.Job)
+            {
+                SkipTransits.Clear(pawn);
+                return false;
+            }
+
+            LocalTargetInfo realDest = transit.RealDestination;
+            PathEndMode realMode = transit.RealEndMode;
+
+            if (transit.Map != pawn.Map || transit.Source == null || transit.Destination == null
+                || !transit.Source.Spawned || !transit.Destination.Spawned)
+            {
+                SkipTransits.Clear(pawn);
+                if (realDest.IsValid)
+                {
+                    pather.StartPath(realDest, realMode);
+                    return true;
+                }
+                return false;
+            }
+
+            if (!pawn.Position.InHorDistOf(transit.Source.Position, 2f))
+                return false;
+
+            IntVec3 landing = FindLanding(pawn.Map, transit.Destination.Position);
+            if (!landing.IsValid)
+            {
+                SkipTransits.Clear(pawn);
+                pather.StartPath(realDest, realMode);
+                return true;
+            }
+
+            int fromBand = CompatReflection.BandOf(pawn.Map, pawn.Position);
+            int toBand = CompatReflection.BandOf(pawn.Map, landing);
+            SkipTransits.Clear(pawn);
+
+            pawn.teleporting = true;
+            try
+            {
+                pawn.Position = landing;
+            }
+            finally
+            {
+                pawn.teleporting = false;
+            }
+
+            if (pawn.IsColonistPlayerControlled)
+                Log.Message("[AASB Skipdoor Compat] " + pawn.LabelShort
+                    + ": explicit skipdoor transit " + transit.Source.Position
+                    + " [band " + fromBand + "] -> " + landing + " [band " + toBand
+                    + "], resuming path to " + realDest.Cell + ".");
+
+            pather.StartPath(realDest, realMode);
+            return true;
+        }
+
+        private static IntVec3 FindLanding(Map map, IntVec3 center)
+        {
+            int band = CompatReflection.BandOf(map, center);
+            IntVec3 occupiedFallback = IntVec3.Invalid;
+            for (int i = 0; i < GenAdj.CardinalDirections.Length; i++)
+            {
+                IntVec3 c = center + GenAdj.CardinalDirections[i];
+                if (!c.InBounds(map) || !c.Standable(map)
+                    || CompatReflection.BandOf(map, c) != band)
+                    continue;
+                if (c.GetFirstPawn(map) == null)
+                    return c;
+                if (!occupiedFallback.IsValid)
+                    occupiedFallback = c;
+            }
+            return occupiedFallback;
+        }
+    }
 
     [HarmonyPatch(typeof(PathFinder), nameof(PathFinder.PushRequest))]
     internal static class Patch_PathFinder_PermitAsync

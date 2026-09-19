@@ -6,7 +6,7 @@
   <supportedVersions>
     <li>1.6</li>
   </supportedVersions>
-  <description>Compatibility patch for As above, So below II and VPE Skipdoor Pathing Redux. Lets cross-level routes use skipdoors when Redux finds them cheaper than AASB's stair route, while retaining AASB stairs as fallback.</description>
+  <description>Compatibility patch for As above, So below II and VPE Skipdoor Pathing Redux. Adds a sparse hybrid routing graph where AASB stairs/elevators and VPE skipdoors can compete and combine across levels without pairwise skipdoor pathfinding.</description>
   <modDependencies>
     <li><packageId>brrainz.harmony</packageId><displayName>Harmony</displayName></li>
     <li><packageId>astryl.AsAboveSoBelow2</packageId><displayName>As above, So below II</displayName></li>

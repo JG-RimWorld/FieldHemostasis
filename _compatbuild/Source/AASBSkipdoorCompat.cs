@@ -17,7 +17,7 @@ namespace AASBSkipdoorCompat
         {
             var harmony = new Harmony(content.PackageIdPlayerFacing);
             harmony.PatchAll();
-            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.1.1.");
+            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.1.2.");
             LongEventHandler.ExecuteWhenFinished(CompatReflection.Initialize);
         }
     }
@@ -31,7 +31,6 @@ namespace AASBSkipdoorCompat
     internal sealed class RoutePermit
     {
         public Map Map;
-        public IntVec3 Start;
         public IntVec3 Dest;
         public int PawnId;
         public int ExpiresAtTick;
@@ -40,7 +39,7 @@ namespace AASBSkipdoorCompat
     internal static class RoutePermits
     {
         private static readonly List<RoutePermit> permits = new List<RoutePermit>();
-        private const int LifetimeTicks = 180;
+        private const int LifetimeTicks = 600;
 
         public static void Add(Pawn pawn, LocalTargetInfo dest)
         {
@@ -50,13 +49,12 @@ namespace AASBSkipdoorCompat
             Cleanup();
             int now = Find.TickManager != null ? Find.TickManager.TicksGame : 0;
             int pawnId = pawn.thingIDNumber;
-            IntVec3 start = pawn.Position;
             IntVec3 target = dest.Cell;
 
             for (int i = 0; i < permits.Count; i++)
             {
                 RoutePermit p = permits[i];
-                if (p.Map == pawn.Map && p.PawnId == pawnId && p.Start == start && p.Dest == target)
+                if (p.Map == pawn.Map && p.PawnId == pawnId && p.Dest == target)
                 {
                     p.ExpiresAtTick = now + LifetimeTicks;
                     return;
@@ -66,14 +64,13 @@ namespace AASBSkipdoorCompat
             permits.Add(new RoutePermit
             {
                 Map = pawn.Map,
-                Start = start,
                 Dest = target,
                 PawnId = pawnId,
                 ExpiresAtTick = now + LifetimeTicks
             });
         }
 
-        public static bool Matches(Map map, IntVec3 start, LocalTargetInfo target)
+        public static bool Matches(Map map, LocalTargetInfo target)
         {
             if (map == null || !target.IsValid)
                 return false;
@@ -83,7 +80,24 @@ namespace AASBSkipdoorCompat
             for (int i = 0; i < permits.Count; i++)
             {
                 RoutePermit p = permits[i];
-                if (p.Map == map && p.Start == start && p.Dest == dest)
+                if (p.Map == map && p.Dest == dest)
+                    return true;
+            }
+            return false;
+        }
+
+        public static bool Matches(Pawn pawn, LocalTargetInfo target)
+        {
+            if (pawn == null || pawn.Map == null || !target.IsValid)
+                return false;
+
+            Cleanup();
+            int pawnId = pawn.thingIDNumber;
+            IntVec3 dest = target.Cell;
+            for (int i = 0; i < permits.Count; i++)
+            {
+                RoutePermit p = permits[i];
+                if (p.Map == pawn.Map && p.PawnId == pawnId && p.Dest == dest)
                     return true;
             }
             return false;
@@ -91,20 +105,17 @@ namespace AASBSkipdoorCompat
 
         public static bool Matches(PathRequest request)
         {
-            if (request == null || request.map == null || !request.Target.IsValid)
+            if (request == null || request.map == null || !request.Target.IsValid || request.pawn == null)
                 return false;
 
             Cleanup();
-            int pawnId = request.pawn != null ? request.pawn.thingIDNumber : -1;
-            IntVec3 start = request.Start;
+            int pawnId = request.pawn.thingIDNumber;
             IntVec3 dest = request.Target.Cell;
 
             for (int i = 0; i < permits.Count; i++)
             {
                 RoutePermit p = permits[i];
-                if (p.Map != request.map || p.Start != start || p.Dest != dest)
-                    continue;
-                if (pawnId < 0 || p.PawnId == pawnId)
+                if (p.Map == request.map && p.PawnId == pawnId && p.Dest == dest)
                     return true;
             }
             return false;
@@ -430,6 +441,15 @@ namespace AASBSkipdoorCompat
         {
             try
             {
+                if (RoutePermits.Matches(pawn, dest))
+                {
+                    if (pawn != null && pawn.IsColonistPlayerControlled)
+                        Log.Message("[AASB Skipdoor Compat] " + pawn.LabelShort
+                            + ": reusing active SKIPDOOR permit for " + dest.Cell);
+                    __result = false;
+                    return false;
+                }
+
                 if (!RouteChooser.ShouldUseSkipdoor(pawn, dest, peMode))
                     return true;
 
@@ -442,6 +462,65 @@ namespace AASBSkipdoorCompat
                 Log.Warning("[AASB Skipdoor Compat] Route choice failed; falling back to AASB: " + e);
                 return true;
             }
+        }
+    }
+
+
+    [HarmonyPatch(typeof(PathFinder), nameof(PathFinder.PushRequest))]
+    internal static class Patch_PathFinder_PermitAsync
+    {
+        [HarmonyPriority(Priority.First)]
+        private static void Prefix(PathRequest request, out bool __state)
+        {
+            __state = CompatState.BypassCrossBandGuard;
+            if (!RoutePermits.Matches(request))
+                return;
+
+            CompatState.BypassCrossBandGuard = true;
+            if (request.pawn != null && request.pawn.IsColonistPlayerControlled)
+                Log.Message("[AASB Skipdoor Compat] " + request.pawn.LabelShort
+                    + ": permitting async Redux cross-band request to " + request.Target.Cell);
+        }
+
+        private static void Postfix(bool __state)
+        {
+            CompatState.BypassCrossBandGuard = __state;
+        }
+    }
+
+    [HarmonyPatch]
+    internal static class Patch_PathFinder_PermitSync
+    {
+        private static MethodBase TargetMethod()
+        {
+            return AccessTools.Method(typeof(PathFinder), nameof(PathFinder.FindPathNow), new[]
+            {
+                typeof(IntVec3),
+                typeof(LocalTargetInfo),
+                typeof(TraverseParms),
+                typeof(PathFinderCostTuning?),
+                typeof(PathEndMode),
+                typeof(PathRequest.IPathGridCustomizer)
+            });
+        }
+
+        [HarmonyPriority(Priority.First)]
+        private static void Prefix(LocalTargetInfo target, TraverseParms traverseParms, out bool __state)
+        {
+            __state = CompatState.BypassCrossBandGuard;
+            Pawn pawn = traverseParms.pawn;
+            if (!RoutePermits.Matches(pawn, target))
+                return;
+
+            CompatState.BypassCrossBandGuard = true;
+            if (pawn != null && pawn.IsColonistPlayerControlled)
+                Log.Message("[AASB Skipdoor Compat] " + pawn.LabelShort
+                    + ": permitting sync Redux cross-band request to " + target.Cell);
+        }
+
+        private static void Postfix(bool __state)
+        {
+            CompatState.BypassCrossBandGuard = __state;
         }
     }
 
@@ -464,7 +543,7 @@ namespace AASBSkipdoorCompat
         private static bool Prefix(Map map, IntVec3 start, LocalTargetInfo target,
             ref string why, ref bool __result)
         {
-            if (!CompatState.BypassCrossBandGuard && !RoutePermits.Matches(map, start, target))
+            if (!CompatState.BypassCrossBandGuard && !RoutePermits.Matches(map, target))
                 return true;
 
             why = null;

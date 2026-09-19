@@ -17,7 +17,7 @@ namespace AASBSkipdoorCompat
         {
             var harmony = new Harmony(content.PackageIdPlayerFacing);
             harmony.PatchAll();
-            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.2.0.");
+            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.3.0.");
             LongEventHandler.ExecuteWhenFinished(CompatReflection.Initialize);
         }
     }
@@ -209,11 +209,13 @@ namespace AASBSkipdoorCompat
         private static MethodInfo tryGetTransit;
         private static MethodInfo bandsBanded;
         private static MethodInfo bandsBandOf;
+        private static MethodInfo componentOfPawn;
+        private static FieldInfo wormholeByMap;
         private static Type doorTeleporterType;
 
         public static bool Ready => initialized && canUseTeleporters != null && getAllTeleporters != null
             && tryGetTransit != null && bandsBanded != null && bandsBandOf != null
-            && doorTeleporterType != null;
+            && componentOfPawn != null && wormholeByMap != null && doorTeleporterType != null;
 
         public static void Initialize()
         {
@@ -235,7 +237,12 @@ namespace AASBSkipdoorCompat
                 tryGetTransit = wormhole.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
                     .FirstOrDefault(m => m.Name == "TryGetTransit" && m.GetParameters().Length == 6
                         && m.GetParameters()[3].ParameterType == typeof(Pawn));
+                wormholeByMap = AccessTools.Field(wormhole, "byMap");
             }
+
+            Type components = AccessTools.TypeByName("AsAboveSoBelow.ABBandComponents");
+            componentOfPawn = AccessTools.Method(components, "ComponentOf",
+                new[] { typeof(Map), typeof(IntVec3), typeof(Pawn) });
 
             Type bands = AccessTools.TypeByName("AsAboveSoBelow.ABBands");
             bandsBanded = AccessTools.Method(bands, "Banded", new[] { typeof(Map) });
@@ -250,7 +257,7 @@ namespace AASBSkipdoorCompat
             }
             else
             {
-                Log.Message("[AASB Skipdoor Compat] Integration active v0.2.0.");
+                Log.Message("[AASB Skipdoor Compat] Integration active v0.3.0.");
             }
         }
 
@@ -285,6 +292,63 @@ namespace AASBSkipdoorCompat
                     return thing;
             }
             return null;
+        }
+
+        public static int ComponentOf(Map map, IntVec3 cell, Pawn pawn)
+        {
+            if (componentOfPawn == null || map == null || !cell.IsValid)
+                return -1;
+            try { return (int)componentOfPawn.Invoke(null, new object[] { map, cell, pawn }); }
+            catch { return -1; }
+        }
+
+        internal sealed class StairPair
+        {
+            public Thing A;
+            public Thing B;
+        }
+
+        public static List<StairPair> GetStairPairs(Map map)
+        {
+            var result = new List<StairPair>();
+            if (wormholeByMap == null || map == null)
+                return result;
+
+            try
+            {
+                object table = wormholeByMap.GetValue(null);
+                if (table == null)
+                    return result;
+
+                MethodInfo tryGet = table.GetType().GetMethod("TryGetValue");
+                if (tryGet == null)
+                    return result;
+
+                object[] args = { map, null };
+                bool found = (bool)tryGet.Invoke(table, args);
+                if (!found || !(args[1] is IEnumerable list))
+                    return result;
+
+                foreach (object pair in list)
+                {
+                    if (pair == null)
+                        continue;
+                    Type pt = pair.GetType();
+                    FieldInfo af = AccessTools.Field(pt, "a");
+                    FieldInfo bf = AccessTools.Field(pt, "b");
+                    Thing a = af?.GetValue(pair) as Thing;
+                    Thing b = bf?.GetValue(pair) as Thing;
+                    if (a != null && b != null && a.Spawned && b.Spawned
+                        && a.Map == map && b.Map == map)
+                        result.Add(new StairPair { A = a, B = b });
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Warning("[AASB Skipdoor Compat] Reading AASB stair graph failed: "
+                    + e.GetType().Name);
+            }
+            return result;
         }
 
         public static bool CanUseSkipdoors(Pawn pawn, LocalTargetInfo dest)
@@ -353,10 +417,81 @@ namespace AASBSkipdoorCompat
 
     internal static class RouteChooser
     {
+        // Same unit AASB uses: one crossing is roughly seven walk cells.
         private const float StairFlightCost = 7f;
-        private const int MaxStairHops = 12;
-        [ThreadStatic] private static IntVec3 chosenJumpA;
-        [ThreadStatic] private static IntVec3 chosenJumpB;
+        // Redux currently prices a skipdoor jump as one cardinal move.
+        private const float SkipFlightCost = 1f;
+        private const float VerifyEpsilon = 0.5f;
+        private const int MaxVerifyRounds = 4;
+
+        private sealed class Node
+        {
+            public Thing Thing;
+            public IntVec3 Cell;
+            public int Component;
+            public bool Skipdoor;
+        }
+
+        private struct Edge
+        {
+            public int To;
+            public float Cost;
+            public Edge(int to, float cost)
+            {
+                To = to;
+                Cost = cost;
+            }
+        }
+
+        private sealed class Heap
+        {
+            private readonly List<KeyValuePair<float, int>> data =
+                new List<KeyValuePair<float, int>>();
+
+            public int Count => data.Count;
+
+            public void Push(float priority, int node)
+            {
+                int i = data.Count;
+                data.Add(new KeyValuePair<float, int>(priority, node));
+                while (i > 0)
+                {
+                    int p = (i - 1) >> 1;
+                    if (data[p].Key <= priority)
+                        break;
+                    data[i] = data[p];
+                    i = p;
+                }
+                data[i] = new KeyValuePair<float, int>(priority, node);
+            }
+
+            public KeyValuePair<float, int> Pop()
+            {
+                KeyValuePair<float, int> root = data[0];
+                int lastIndex = data.Count - 1;
+                KeyValuePair<float, int> last = data[lastIndex];
+                data.RemoveAt(lastIndex);
+                if (data.Count == 0)
+                    return root;
+
+                int i = 0;
+                while (true)
+                {
+                    int left = i * 2 + 1;
+                    if (left >= data.Count)
+                        break;
+                    int right = left + 1;
+                    int child = right < data.Count && data[right].Key < data[left].Key
+                        ? right : left;
+                    if (data[child].Key >= last.Key)
+                        break;
+                    data[i] = data[child];
+                    i = child;
+                }
+                data[i] = last;
+                return root;
+            }
+        }
 
         public static bool TryChooseSkipdoor(Pawn pawn, LocalTargetInfo dest, PathEndMode peMode,
             out Thing source, out Thing destination)
@@ -366,226 +501,438 @@ namespace AASBSkipdoorCompat
             if (pawn == null || !pawn.Spawned || pawn.Map == null || !dest.IsValid)
                 return false;
 
-            // FindPathNow may be reached while a save/map is still loading on the long-event
-            // thread. Redux allocates Native Temp containers there, which Unity rejects.
-            // Routing decisions are safe to defer until normal play resumes.
             if (Scribe.mode != LoadSaveMode.Inactive
                 || LongEventHandler.AnyEventNowOrWaiting
                 || Current.ProgramState != ProgramState.Playing)
                 return false;
 
             CompatReflection.Initialize();
-            if (!CompatReflection.Ready || !CompatReflection.IsBanded(pawn.Map))
+            if (!CompatReflection.Ready || !CompatReflection.IsBanded(pawn.Map)
+                || !CompatReflection.CanUseSkipdoors(pawn, dest))
                 return false;
 
-            // Only compete on journeys AASB can actually segment through a vertical link.
-            // Same-band travel remains entirely Redux's responsibility.
-            float stairCost;
-            if (!TryStairRouteCost(pawn, dest, peMode, out stairCost))
+            Map map = pawn.Map;
+            int startComp = CompatReflection.ComponentOf(map, pawn.Position, pawn);
+            if (startComp < 0)
                 return false;
 
-            if (!CompatReflection.CanUseSkipdoors(pawn, dest))
+            HashSet<int> destComps = DestinationComponents(map, dest.Cell, peMode, pawn);
+            if (destComps.Count == 0 || destComps.Contains(startComp))
+                return false; // ordinary local route; Redux owns it.
+
+            List<CompatReflection.StairPair> stairs = CompatReflection.GetStairPairs(map);
+            HashSet<IntVec3> skipCells = CompatReflection.GetSkipdoors(map);
+            if (skipCells.Count < 2 || stairs.Count == 0)
+                return false;
+
+            // Build one connector node per AASB stair anchor and per skipdoor.
+            // There is NO skipdoor<->skipdoor complete graph. All skipdoors meet at one
+            // virtual hub below, so n skipdoors contribute O(n) hub edges.
+            var nodes = new List<Node>();
+            var indexByThing = new Dictionary<int, int>();
+            var stairEdges = new List<KeyValuePair<int, int>>();
+            var stairIndices = new List<int>();
+            var skipIndices = new List<int>();
+
+            Func<Thing, bool, int> addNode = (thing, isSkip) =>
             {
-                TraceDecision(pawn, "AASB stair route cost " + stairCost.ToString("0.0")
-                    + "; Redux says this pawn/job cannot use skipdoors.");
+                if (thing == null || !thing.Spawned || thing.Map != map)
+                    return -1;
+                if (indexByThing.TryGetValue(thing.thingIDNumber, out int existing))
+                    return existing;
+                int comp = CompatReflection.ComponentOf(map, thing.Position, pawn);
+                if (comp < 0)
+                    return -1;
+                int idx = nodes.Count;
+                nodes.Add(new Node
+                {
+                    Thing = thing,
+                    Cell = thing.Position,
+                    Component = comp,
+                    Skipdoor = isSkip
+                });
+                indexByThing.Add(thing.thingIDNumber, idx);
+                if (isSkip) skipIndices.Add(idx);
+                else stairIndices.Add(idx);
+                return idx;
+            };
+
+            for (int i = 0; i < stairs.Count; i++)
+            {
+                int a = addNode(stairs[i].A, false);
+                int b = addNode(stairs[i].B, false);
+                if (a >= 0 && b >= 0 && a != b)
+                    stairEdges.Add(new KeyValuePair<int, int>(a, b));
+            }
+
+            foreach (IntVec3 c in skipCells)
+            {
+                Thing t = CompatReflection.SkipdoorAt(map, c);
+                addNode(t, true);
+            }
+
+            if (skipIndices.Count < 2 || nodes.Count == 0)
+                return false;
+
+            int hub = nodes.Count;
+            int graphCount = hub + 1;
+
+            // Adjacency only stores sparse special edges. Same-component walking is
+            // generated on expansion. Critically, skipdoor-to-skipdoor walking edges are
+            // omitted because teleporting through the hub is always <= walking between two
+            // skipdoors and costs one cell.
+            var special = new List<Edge>[graphCount];
+            for (int i = 0; i < graphCount; i++)
+                special[i] = new List<Edge>();
+
+            for (int i = 0; i < stairEdges.Count; i++)
+            {
+                int a = stairEdges[i].Key;
+                int b = stairEdges[i].Value;
+                special[a].Add(new Edge(b, StairFlightCost));
+                special[b].Add(new Edge(a, StairFlightCost));
+            }
+
+            float halfSkip = SkipFlightCost * 0.5f;
+            for (int i = 0; i < skipIndices.Count; i++)
+            {
+                int g = skipIndices[i];
+                special[g].Add(new Edge(hub, halfSkip));
+                special[hub].Add(new Edge(g, halfSkip));
+            }
+
+            // Winner-verification only corrects the pawn-side leg. Mid-graph walk terms are
+            // straight-line estimates, as in AASB's estimate mode, so building the graph
+            // never launches O(n) or O(n^2) pathfinders.
+            var verifiedWalkIn = new Dictionary<int, float>();
+            for (int round = 0; round <= MaxVerifyRounds; round++)
+            {
+                float[] dist;
+                int[] next;
+                RunDijkstra(nodes, hub, special, stairIndices, skipIndices,
+                    destComps, dest.Cell, out dist, out next);
+
+                FirstHop stairHop = BestStairFirstHop(nodes, stairEdges, startComp,
+                    pawn.Position, dist, verifiedWalkIn);
+                FirstHop skipHop = BestSkipFirstHop(nodes, skipIndices, hub, startComp,
+                    pawn.Position, dist, verifiedWalkIn);
+
+                if (!skipHop.Valid)
+                {
+                    TraceDecision(pawn, "hybrid graph found no usable skipdoor first hop; AASB handles stairs.");
+                    return false;
+                }
+
+                if (stairHop.Valid && stairHop.Total <= skipHop.Total + 0.05f)
+                {
+                    TraceDecision(pawn, "hybrid graph: stairs "
+                        + stairHop.Total.ToString("0.0") + " <= skipdoor "
+                        + skipHop.Total.ToString("0.0") + "; AASB handles first hop.");
+                    return false;
+                }
+
+                // Verify only the candidate that is about to win. At most one real same-band
+                // path probe per correction round; independent of the total number of gates.
+                if (!verifiedWalkIn.ContainsKey(skipHop.Near))
+                {
+                    float real;
+                    if (!TryLocalPathCost(pawn, pawn.Position,
+                            new LocalTargetInfo(nodes[skipHop.Near].Thing),
+                            PathEndMode.Touch, out real))
+                    {
+                        verifiedWalkIn[skipHop.Near] = float.PositiveInfinity;
+                        continue;
+                    }
+
+                    verifiedWalkIn[skipHop.Near] = real;
+                    float estimated = Octile(pawn.Position, nodes[skipHop.Near].Cell);
+                    if (Math.Abs(real - estimated) > VerifyEpsilon)
+                    {
+                        TraceDecision(pawn, "verified skipdoor entry "
+                            + nodes[skipHop.Near].Cell + ": "
+                            + estimated.ToString("0.0") + " -> " + real.ToString("0.0")
+                            + "; re-ranking.");
+                        continue;
+                    }
+                }
+
+                int exit = skipHop.Far;
+                if (exit < 0 || exit >= nodes.Count || exit == skipHop.Near)
+                    return false;
+
+                source = nodes[skipHop.Near].Thing;
+                destination = nodes[exit].Thing;
+                if (source == null || destination == null || !source.Spawned || !destination.Spawned)
+                {
+                    source = null;
+                    destination = null;
+                    return false;
+                }
+
+                TraceDecision(pawn, "hybrid graph -> SKIPDOOR first: "
+                    + source.Position + " [comp " + nodes[skipHop.Near].Component + "] -> "
+                    + destination.Position + " [comp " + nodes[exit].Component + "]"
+                    + "; estimated full route " + skipHop.Total.ToString("0.0")
+                    + (stairHop.Valid ? " vs stair-first " + stairHop.Total.ToString("0.0") : "")
+                    + "; gates=" + skipIndices.Count + ", stairs=" + stairEdges.Count + ".");
+                return true;
+            }
+            return false;
+        }
+
+        private struct FirstHop
+        {
+            public bool Valid;
+            public int Near;
+            public int Far;
+            public float Total;
+        }
+
+        private static FirstHop BestStairFirstHop(List<Node> nodes,
+            List<KeyValuePair<int, int>> pairs, int startComp, IntVec3 start,
+            float[] dist, Dictionary<int, float> verified)
+        {
+            FirstHop best = default(FirstHop);
+            best.Total = float.PositiveInfinity;
+            for (int i = 0; i < pairs.Count; i++)
+            {
+                RankStair(nodes, pairs[i].Key, pairs[i].Value, startComp, start,
+                    dist, verified, ref best);
+                RankStair(nodes, pairs[i].Value, pairs[i].Key, startComp, start,
+                    dist, verified, ref best);
+            }
+            return best;
+        }
+
+        private static void RankStair(List<Node> nodes, int near, int far,
+            int startComp, IntVec3 start, float[] dist, Dictionary<int, float> verified,
+            ref FirstHop best)
+        {
+            if (nodes[near].Component != startComp || nodes[far].Component == startComp
+                || float.IsInfinity(dist[far]))
+                return;
+            float walk = verified.TryGetValue(near, out float v)
+                ? v : Octile(start, nodes[near].Cell);
+            if (float.IsInfinity(walk))
+                return;
+            float total = walk + StairFlightCost + dist[far];
+            if (total < best.Total)
+                best = new FirstHop { Valid = true, Near = near, Far = far, Total = total };
+        }
+
+        private static FirstHop BestSkipFirstHop(List<Node> nodes, List<int> gates,
+            int hub, int startComp, IntVec3 start, float[] dist,
+            Dictionary<int, float> verified)
+        {
+            // Best and second-best exits. This avoids scanning all exits for every entry:
+            // one O(n) pass replaces n*(n-1)/2 pair comparisons.
+            int bestExit = -1;
+            int secondExit = -1;
+            float bestExitCost = float.PositiveInfinity;
+            float secondExitCost = float.PositiveInfinity;
+            for (int i = 0; i < gates.Count; i++)
+            {
+                int g = gates[i];
+                if (float.IsInfinity(dist[g]))
+                    continue;
+                float value = SkipFlightCost * 0.5f + dist[g];
+                if (value < bestExitCost)
+                {
+                    secondExitCost = bestExitCost;
+                    secondExit = bestExit;
+                    bestExitCost = value;
+                    bestExit = g;
+                }
+                else if (value < secondExitCost)
+                {
+                    secondExitCost = value;
+                    secondExit = g;
+                }
+            }
+
+            FirstHop best = default(FirstHop);
+            best.Total = float.PositiveInfinity;
+            for (int i = 0; i < gates.Count; i++)
+            {
+                int entry = gates[i];
+                if (nodes[entry].Component != startComp)
+                    continue;
+
+                int exit = bestExit != entry ? bestExit : secondExit;
+                float exitCost = bestExit != entry ? bestExitCost : secondExitCost;
+                if (exit < 0 || float.IsInfinity(exitCost))
+                    continue;
+
+                float walk = verified.TryGetValue(entry, out float v)
+                    ? v : Octile(start, nodes[entry].Cell);
+                if (float.IsInfinity(walk))
+                    continue;
+
+                // entry -> hub is half a skip; hub -> exit is included in exitCost.
+                float total = walk + SkipFlightCost * 0.5f + exitCost;
+                if (total < best.Total)
+                    best = new FirstHop { Valid = true, Near = entry, Far = exit, Total = total };
+            }
+            return best;
+        }
+
+        private static void RunDijkstra(List<Node> nodes, int hub,
+            List<Edge>[] special, List<int> stairIndices, List<int> skipIndices,
+            HashSet<int> destComps, IntVec3 dest, out float[] dist, out int[] next)
+        {
+            int count = hub + 1;
+            dist = new float[count];
+            next = new int[count];
+            for (int i = 0; i < count; i++)
+            {
+                dist[i] = float.PositiveInfinity;
+                next[i] = -1;
+            }
+
+            var heap = new Heap();
+            for (int i = 0; i < nodes.Count; i++)
+            {
+                if (!destComps.Contains(nodes[i].Component))
+                    continue;
+                float seed = Octile(nodes[i].Cell, dest);
+                dist[i] = seed;
+                heap.Push(seed, i);
+            }
+
+            bool[] settled = new bool[count];
+            while (heap.Count > 0)
+            {
+                KeyValuePair<float, int> cur = heap.Pop();
+                int u = cur.Value;
+                if (settled[u] || cur.Key > dist[u] + 0.0001f)
+                    continue;
+                settled[u] = true;
+
+                List<Edge> edges = special[u];
+                for (int e = 0; e < edges.Count; e++)
+                    Relax(u, edges[e].To, edges[e].Cost, dist, next, settled, heap);
+
+                if (u == hub)
+                    continue;
+
+                Node nu = nodes[u];
+
+                // Walking to stair anchors in the same component is always relevant.
+                for (int i = 0; i < stairIndices.Count; i++)
+                {
+                    int v = stairIndices[i];
+                    if (v == u || nodes[v].Component != nu.Component)
+                        continue;
+                    Relax(u, v, Octile(nu.Cell, nodes[v].Cell),
+                        dist, next, settled, heap);
+                }
+
+                // Only a STAIR node needs explicit walking edges to skipdoors. For a
+                // skipdoor node, another skipdoor is reached more cheaply through the hub;
+                // omitting skip<->skip walk edges is what removes the n^2 gate term.
+                if (!nu.Skipdoor)
+                {
+                    for (int i = 0; i < skipIndices.Count; i++)
+                    {
+                        int v = skipIndices[i];
+                        if (nodes[v].Component != nu.Component)
+                            continue;
+                        Relax(u, v, Octile(nu.Cell, nodes[v].Cell),
+                            dist, next, settled, heap);
+                    }
+                }
+            }
+        }
+
+        // Dijkstra is run outward from destination seeds on an undirected graph. Relaxing
+        // v from settled u means "from v, go next to u on the way to the destination".
+        private static void Relax(int u, int v, float edge, float[] dist, int[] next,
+            bool[] settled, Heap heap)
+        {
+            if (v < 0 || v >= dist.Length || settled[v] || float.IsInfinity(dist[u]))
+                return;
+            float cand = dist[u] + edge;
+            if (cand + 0.0001f < dist[v])
+            {
+                dist[v] = cand;
+                next[v] = u;
+                heap.Push(cand, v);
+            }
+        }
+
+        private static HashSet<int> DestinationComponents(Map map, IntVec3 dest,
+            PathEndMode mode, Pawn pawn)
+        {
+            var result = new HashSet<int>();
+            int direct = CompatReflection.ComponentOf(map, dest, pawn);
+            if (direct >= 0)
+            {
+                result.Add(direct);
+                return result;
+            }
+
+            if (mode != PathEndMode.Touch)
+                return result;
+
+            int band = CompatReflection.BandOf(map, dest);
+            for (int i = 0; i < GenAdj.AdjacentCells.Length; i++)
+            {
+                IntVec3 c = dest + GenAdj.AdjacentCells[i];
+                if (!c.InBounds(map) || CompatReflection.BandOf(map, c) != band)
+                    continue;
+                int comp = CompatReflection.ComponentOf(map, c, pawn);
+                if (comp >= 0)
+                    result.Add(comp);
+            }
+            return result;
+        }
+
+        private static float Octile(IntVec3 a, IntVec3 b)
+        {
+            int dx = Math.Abs(a.x - b.x);
+            int dz = Math.Abs(a.z - b.z);
+            int diagonal = Math.Min(dx, dz);
+            int straight = Math.Max(dx, dz) - diagonal;
+            return diagonal * 1.41421356f + straight;
+        }
+
+        private static bool TryLocalPathCost(Pawn pawn, IntVec3 start,
+            LocalTargetInfo dest, PathEndMode mode, out float cost)
+        {
+            cost = 0f;
+            bool oldDisable = CompatState.DisableSkipdoors;
+            CompatState.DisableSkipdoors = true;
+            try
+            {
+                using (PawnPath path = pawn.Map.pathFinder.FindPathNow(start, dest, pawn, null, mode))
+                {
+                    if (path == null || !path.Found)
+                        return false;
+                    List<IntVec3> cells = path.NodesReversed;
+                    if (cells == null || cells.Count < 2)
+                        return true;
+                    for (int i = 1; i < cells.Count; i++)
+                    {
+                        IntVec3 d = cells[i] - cells[i - 1];
+                        cost += d.x != 0 && d.z != 0 ? 1.41421356f : 1f;
+                    }
+                    return true;
+                }
+            }
+            catch
+            {
                 return false;
             }
-
-            HashSet<IntVec3> skipdoors = CompatReflection.GetSkipdoors(pawn.Map);
-            if (skipdoors.Count < 2)
+            finally
             {
-                TraceDecision(pawn, "AASB stair route cost " + stairCost.ToString("0.0")
-                    + "; fewer than two usable skipdoors found.");
-                return false;
+                CompatState.DisableSkipdoors = oldDisable;
             }
-
-            float skipCost;
-            if (!TryPathCost(pawn, pawn.Position, dest, peMode, skipdoors,
-                    allowSkipdoors: true, bypassCrossBand: true, requireTeleport: true, out skipCost))
-            {
-                TraceDecision(pawn, "AASB stair route cost " + stairCost.ToString("0.0")
-                    + "; Redux cross-band probe found no valid skipdoor route.");
-                return false;
-            }
-
-            int pawnBand = CompatReflection.BandOf(pawn.Map, pawn.Position);
-            int bandA = CompatReflection.BandOf(pawn.Map, chosenJumpA);
-            int bandB = CompatReflection.BandOf(pawn.Map, chosenJumpB);
-
-            if (!chosenJumpA.IsValid || !chosenJumpB.IsValid || bandA < 0 || bandB < 0
-                || bandA == bandB)
-            {
-                TraceDecision(pawn, "Redux route used only same-band skipdoors; leaving cross-band travel to AASB.");
-                return false;
-            }
-
-            IntVec3 sourceCell;
-            IntVec3 destinationCell;
-            if (bandA == pawnBand)
-            {
-                sourceCell = chosenJumpA;
-                destinationCell = chosenJumpB;
-            }
-            else if (bandB == pawnBand)
-            {
-                sourceCell = chosenJumpB;
-                destinationCell = chosenJumpA;
-            }
-            else
-            {
-                TraceDecision(pawn, "Redux cross-band jump does not start in pawn's current band; leaving it to AASB.");
-                return false;
-            }
-
-            source = CompatReflection.SkipdoorAt(pawn.Map, sourceCell);
-            destination = CompatReflection.SkipdoorAt(pawn.Map, destinationCell);
-            if (source == null || destination == null)
-            {
-                TraceDecision(pawn, "Redux jump endpoints vanished before segmentation.");
-                source = null;
-                destination = null;
-                return false;
-            }
-
-            bool useSkipdoor = skipCost <= stairCost + 0.05f;
-            TraceDecision(pawn, "route to " + dest.Cell + ": cross-band skipdoor "
-                + sourceCell + " [band " + pawnBand + "] -> " + destinationCell
-                + " [band " + CompatReflection.BandOf(pawn.Map, destinationCell) + "] cost "
-                + skipCost.ToString("0.0") + " vs stairs " + stairCost.ToString("0.0")
-                + " -> " + (useSkipdoor ? "SKIPDOOR" : "STAIRS"));
-            if (!useSkipdoor)
-            {
-                source = null;
-                destination = null;
-            }
-            return useSkipdoor;
         }
 
         private static void TraceDecision(Pawn pawn, string message)
         {
             if (pawn != null && pawn.IsColonistPlayerControlled)
                 Log.Message("[AASB Skipdoor Compat] " + pawn.LabelShort + ": " + message);
-        }
-
-        private static bool TryStairRouteCost(Pawn pawn, LocalTargetInfo dest, PathEndMode peMode,
-            out float total)
-        {
-            total = 0f;
-            Map map = pawn.Map;
-            IntVec3 current = pawn.Position;
-            var visited = new HashSet<int>();
-
-            bool oldDisable = CompatState.DisableSkipdoors;
-            CompatState.DisableSkipdoors = true;
-            try
-            {
-                for (int hop = 0; hop < MaxStairHops; hop++)
-                {
-                    Thing near;
-                    Thing far;
-                    if (!CompatReflection.TryGetStairTransit(map, current, dest.Cell, pawn, out near, out far))
-                    {
-                        float finalCost;
-                        if (!TryPathCost(pawn, current, dest, peMode, null,
-                                allowSkipdoors: false, bypassCrossBand: false,
-                                requireTeleport: false, out finalCost))
-                            return false;
-                        total += finalCost;
-                        return true;
-                    }
-
-                    int edgeKey = near.thingIDNumber * 397 ^ far.thingIDNumber;
-                    if (!visited.Add(edgeKey))
-                        return false;
-
-                    float walkCost;
-                    if (!TryPathCost(pawn, current, new LocalTargetInfo(near), PathEndMode.Touch,
-                            null, allowSkipdoors: false, bypassCrossBand: false,
-                            requireTeleport: false, out walkCost))
-                        return false;
-
-                    total += walkCost + StairFlightCost;
-                    current = far.Position;
-                }
-            }
-            finally
-            {
-                CompatState.DisableSkipdoors = oldDisable;
-            }
-            return false;
-        }
-
-        private static bool TryPathCost(Pawn pawn, IntVec3 start, LocalTargetInfo dest,
-            PathEndMode peMode, HashSet<IntVec3> skipdoors, bool allowSkipdoors,
-            bool bypassCrossBand, bool requireTeleport, out float cost)
-        {
-            cost = 0f;
-            chosenJumpA = IntVec3.Invalid;
-            chosenJumpB = IntVec3.Invalid;
-            bool oldBypass = CompatState.BypassCrossBandGuard;
-            bool oldDisable = CompatState.DisableSkipdoors;
-            CompatState.BypassCrossBandGuard = bypassCrossBand;
-            CompatState.DisableSkipdoors = !allowSkipdoors;
-
-            try
-            {
-                using (PawnPath path = pawn.Map.pathFinder.FindPathNow(start, dest, pawn, null, peMode))
-                {
-                    if (path == null || !path.Found)
-                        return false;
-
-                    List<IntVec3> nodes = path.NodesReversed;
-                    if (nodes == null || nodes.Count < 1)
-                        return !requireTeleport;
-
-                    bool usedTeleport = false;
-                    float sum = 0f;
-                    for (int i = 1; i < nodes.Count; i++)
-                    {
-                        IntVec3 a = nodes[i - 1];
-                        IntVec3 b = nodes[i];
-                        int dx = Math.Abs(a.x - b.x);
-                        int dz = Math.Abs(a.z - b.z);
-
-                        bool jump = dx > 1 || dz > 1;
-                        bool skipJump = jump && skipdoors != null
-                            && skipdoors.Contains(a) && skipdoors.Contains(b);
-                        if (skipJump)
-                        {
-                            int bandA = CompatReflection.BandOf(pawn.Map, a);
-                            int bandB = CompatReflection.BandOf(pawn.Map, b);
-                            if (bandA >= 0 && bandB >= 0 && bandA != bandB && !usedTeleport)
-                            {
-                                usedTeleport = true;
-                                chosenJumpA = a;
-                                chosenJumpB = b;
-                            }
-                            sum += 1f;
-                        }
-                        else if (dx != 0 && dz != 0)
-                        {
-                            sum += 1.41421356f;
-                        }
-                        else if (dx != 0 || dz != 0)
-                        {
-                            sum += 1f;
-                        }
-                    }
-
-                    cost = sum;
-                    return !requireTeleport || usedTeleport;
-                }
-            }
-            catch (Exception e)
-            {
-                Log.Warning("[AASB Skipdoor Compat] Path probe failed: " + e.GetType().Name);
-                return false;
-            }
-            finally
-            {
-                CompatState.BypassCrossBandGuard = oldBypass;
-                CompatState.DisableSkipdoors = oldDisable;
-            }
         }
     }
 

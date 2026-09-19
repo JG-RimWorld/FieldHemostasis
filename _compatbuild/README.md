@@ -13,3 +13,7 @@ Fixes Harmony target resolution against AASB's overloaded CrossBand method and p
 
 ## v0.1.2
 Keeps skipdoor route permits across normal 1.6 path retries, keys them by pawn + destination instead of exact start cell, and explicitly carries the bypass through PathFinder.PushRequest/FindPathNow so AASB cannot re-reject a route already chosen for Redux.
+
+
+## v0.2.0
+Cross-band skipdoor travel no longer relies on a discontinuous PawnPath surviving AASB. The compat patch now verifies that the chosen Redux jump really crosses AASB bands, segments the trip at the source skipdoor, performs the same-map teleport explicitly, and resumes the original destination without replacing the pawn's job. Same-band skipdoor use remains Redux's responsibility.

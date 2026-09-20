@@ -17,7 +17,7 @@ namespace AASBSkipdoorCompat
         {
             var harmony = new Harmony(content.PackageIdPlayerFacing);
             harmony.PatchAll();
-            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.3.0.");
+            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.3.1.");
             LongEventHandler.ExecuteWhenFinished(CompatReflection.Initialize);
         }
     }
@@ -257,7 +257,7 @@ namespace AASBSkipdoorCompat
             }
             else
             {
-                Log.Message("[AASB Skipdoor Compat] Integration active v0.3.0.");
+                Log.Message("[AASB Skipdoor Compat] Integration active v0.3.1.");
             }
         }
 
@@ -1068,13 +1068,30 @@ namespace AASBSkipdoorCompat
                 pawn.teleporting = false;
             }
 
+            // We are suppressing vanilla PatherArrived because arrival at the source
+            // skipdoor is only an intermediate waypoint. PatherArrived normally begins
+            // with StopDead(), though, and skipping that cleanup leaves nextCell,
+            // nextCellCost and the old async path/request pointing at the entrance.
+            // After moving the pawn across the map, StartPath can then inherit that stale
+            // movement state: most trips self-heal, but some pawns remain Standing at the
+            // exit. Notify_Teleported(false) is vanilla's supported way to reset exactly
+            // this state without interrupting the current job; it calls
+            // Pawn_PathFollower.Notify_Teleported_Int -> StopDead + ResetToCurrentPosition.
+            pawn.Notify_Teleported(endCurrentJob: false, resetTweenedPos: true);
+
             if (pawn.IsColonistPlayerControlled)
                 Log.Message("[AASB Skipdoor Compat] " + pawn.LabelShort
                     + ": explicit skipdoor transit " + transit.Source.Position
                     + " [band " + fromBand + "] -> " + landing + " [band " + toBand
-                    + "], resuming path to " + realDest.Cell + ".");
+                    + "], pather reset; resuming path to " + realDest.Cell + ".");
 
             pather.StartPath(realDest, realMode);
+
+            if (pawn.IsColonistPlayerControlled)
+                Log.Message("[AASB Skipdoor Compat] " + pawn.LabelShort
+                    + ": post-transit resume issued; moving=" + pather.Moving
+                    + ", destination=" + pather.Destination.Cell + ".");
+
             return true;
         }
 

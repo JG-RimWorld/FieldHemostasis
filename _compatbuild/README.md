@@ -25,3 +25,7 @@ Replaces the cross-band Redux path probe with a sparse hybrid graph. AASB stair/
 
 ## v0.3.1
 Fixes intermittent pawns remaining Standing immediately after an explicit skipdoor transit. The compat patch now uses RimWorld's own Notify_Teleported(endCurrentJob: false) after moving the pawn, which resets stale Pawn_PathFollower state (old path request, nextCell and movement costs) without interrupting the current job, then resumes the original destination.
+
+
+## v0.4.0
+Cross-band skipdoor segments now play the native VPE skipdoor sequence instead of jumping instantly. On reaching the source gate the pawn holds for the same 16-tick transit window used by VEF, calls the Skipdoor override of DoTeleportEffects each tick (native entry/exit flecks, sound, exit effecter and VPE-selected landing cell), then performs a safe same-map teleport reset and resumes the original job. The compat intentionally does not call VEF DoorTeleporter.Teleport on same-map travel because that method clears reservations, uses ExitMap/Spawn and drops carried things.

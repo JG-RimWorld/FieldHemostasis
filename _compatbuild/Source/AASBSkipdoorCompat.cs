@@ -17,7 +17,7 @@ namespace AASBSkipdoorCompat
         {
             var harmony = new Harmony(content.PackageIdPlayerFacing);
             harmony.PatchAll();
-            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.3.1.");
+            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.4.0.");
             LongEventHandler.ExecuteWhenFinished(CompatReflection.Initialize);
         }
     }
@@ -143,6 +143,9 @@ namespace AASBSkipdoorCompat
         public PathEndMode RealEndMode;
         public Job Job;
         public int ExpiresAtTick;
+        public bool HoldingAtSource;
+        public int EffectTicksLeft;
+        public IntVec3 EffectTargetCell;
     }
 
     internal static class SkipTransits
@@ -175,7 +178,10 @@ namespace AASBSkipdoorCompat
                 RealDestination = realDestination,
                 RealEndMode = realEndMode,
                 Job = pawn.CurJob,
-                ExpiresAtTick = now + LifetimeTicks
+                ExpiresAtTick = now + LifetimeTicks,
+                HoldingAtSource = false,
+                EffectTicksLeft = -1,
+                EffectTargetCell = IntVec3.Invalid
             };
         }
 
@@ -212,10 +218,13 @@ namespace AASBSkipdoorCompat
         private static MethodInfo componentOfPawn;
         private static FieldInfo wormholeByMap;
         private static Type doorTeleporterType;
+        private static MethodInfo doTeleportEffects;
+        private static FieldInfo teleportEffecters;
 
         public static bool Ready => initialized && canUseTeleporters != null && getAllTeleporters != null
             && tryGetTransit != null && bandsBanded != null && bandsBandOf != null
-            && componentOfPawn != null && wormholeByMap != null && doorTeleporterType != null;
+            && componentOfPawn != null && wormholeByMap != null && doorTeleporterType != null
+            && doTeleportEffects != null;
 
         public static void Initialize()
         {
@@ -230,6 +239,11 @@ namespace AASBSkipdoorCompat
                 new[] { typeof(Map) });
 
             doorTeleporterType = AccessTools.TypeByName("VEF.Buildings.DoorTeleporter");
+            if (doorTeleporterType != null)
+            {
+                doTeleportEffects = AccessTools.Method(doorTeleporterType, "DoTeleportEffects");
+                teleportEffecters = AccessTools.Field(doorTeleporterType, "teleportEffecters");
+            }
 
             Type wormhole = AccessTools.TypeByName("AsAboveSoBelow.ABWormhole");
             if (wormhole != null)
@@ -257,7 +271,7 @@ namespace AASBSkipdoorCompat
             }
             else
             {
-                Log.Message("[AASB Skipdoor Compat] Integration active v0.3.1.");
+                Log.Message("[AASB Skipdoor Compat] Integration active v0.4.0.");
             }
         }
 
@@ -349,6 +363,55 @@ namespace AASBSkipdoorCompat
                     + e.GetType().Name);
             }
             return result;
+        }
+
+        public static bool RunSkipdoorEffects(Thing source, Pawn pawn, int ticksLeft,
+            Map targetMap, Thing destination, ref IntVec3 targetCell)
+        {
+            if (source == null || destination == null || pawn == null || targetMap == null
+                || doTeleportEffects == null || doorTeleporterType == null
+                || !doorTeleporterType.IsInstanceOfType(source)
+                || !doorTeleporterType.IsInstanceOfType(destination))
+                return false;
+
+            try
+            {
+                object[] args = { pawn, ticksLeft, targetMap, targetCell, destination };
+                // MethodInfo points at the virtual base method; Invoke dispatches to the
+                // Skipdoor override, so VPE itself chooses the exit cell and produces its
+                // normal flecks, sound and effecter.
+                doTeleportEffects.Invoke(source, args);
+                if (args[3] is IntVec3 cell)
+                    targetCell = cell;
+                return true;
+            }
+            catch (TargetInvocationException e)
+            {
+                Log.Warning("[AASB Skipdoor Compat] Skipdoor effects failed: "
+                    + (e.InnerException != null ? e.InnerException.GetType().Name : e.GetType().Name));
+                return false;
+            }
+            catch (Exception e)
+            {
+                Log.Warning("[AASB Skipdoor Compat] Skipdoor effects failed: " + e.GetType().Name);
+                return false;
+            }
+        }
+
+        public static void ClearSkipdoorEffecter(Thing source, Pawn pawn)
+        {
+            if (source == null || pawn == null || teleportEffecters == null)
+                return;
+            try
+            {
+                object dict = teleportEffecters.GetValue(source);
+                MethodInfo remove = dict?.GetType().GetMethod("Remove", new[] { typeof(Thing) });
+                remove?.Invoke(dict, new object[] { pawn });
+            }
+            catch
+            {
+                // Visual cleanup must never break movement.
+            }
         }
 
         public static bool CanUseSkipdoors(Pawn pawn, LocalTargetInfo dest)
@@ -1046,18 +1109,84 @@ namespace AASBSkipdoorCompat
             if (!pawn.Position.InHorDistOf(transit.Source.Position, 2f))
                 return false;
 
-            IntVec3 landing = FindLanding(pawn.Map, transit.Destination.Position);
+            // Arrival at the source is an intermediate waypoint, so suppress vanilla
+            // PatherArrived (which would advance the real job), but perform its essential
+            // pather cleanup ourselves before entering the normal skipdoor wind-up.
+            if (!transit.HoldingAtSource)
+            {
+                pather.StopDead();
+                transit.HoldingAtSource = true;
+                transit.EffectTicksLeft = 15;
+                transit.EffectTargetCell = IntVec3.Invalid;
+
+                if (pawn.IsColonistPlayerControlled)
+                    Log.Message("[AASB Skipdoor Compat] " + pawn.LabelShort
+                        + ": reached skipdoor " + transit.Source.Position
+                        + "; beginning native 16-tick skipdoor transit to "
+                        + transit.Destination.Position + ".");
+            }
+            return true;
+        }
+
+        internal static void TickHoldingTransit(Pawn_PathFollower pather, Pawn pawn)
+        {
+            SkipTransit transit;
+            if (!SkipTransits.TryGet(pawn, out transit) || !transit.HoldingAtSource)
+                return;
+
+            if (transit.Job != null && pawn.CurJob != transit.Job)
+            {
+                CompatReflection.ClearSkipdoorEffecter(transit.Source, pawn);
+                SkipTransits.Clear(pawn);
+                return;
+            }
+
+            LocalTargetInfo realDest = transit.RealDestination;
+            PathEndMode realMode = transit.RealEndMode;
+
+            if (transit.Map != pawn.Map || transit.Source == null || transit.Destination == null
+                || !transit.Source.Spawned || !transit.Destination.Spawned)
+            {
+                CompatReflection.ClearSkipdoorEffecter(transit.Source, pawn);
+                SkipTransits.Clear(pawn);
+                if (realDest.IsValid)
+                    pather.StartPath(realDest, realMode);
+                return;
+            }
+
+            int ticks = transit.EffectTicksLeft;
+            IntVec3 targetCell = transit.EffectTargetCell;
+            bool effectsOk = CompatReflection.RunSkipdoorEffects(transit.Source, pawn, ticks,
+                pawn.Map, transit.Destination, ref targetCell);
+            transit.EffectTargetCell = targetCell;
+
+            if (ticks > 0)
+            {
+                transit.EffectTicksLeft = ticks - 1;
+                return;
+            }
+
+            IntVec3 landing = targetCell;
+            if (!effectsOk || !landing.IsValid || !landing.InBounds(pawn.Map)
+                || !landing.Standable(pawn.Map))
+                landing = FindLanding(pawn.Map, transit.Destination.Position);
+
             if (!landing.IsValid)
             {
+                CompatReflection.ClearSkipdoorEffecter(transit.Source, pawn);
                 SkipTransits.Clear(pawn);
                 pather.StartPath(realDest, realMode);
-                return true;
+                return;
             }
 
             int fromBand = CompatReflection.BandOf(pawn.Map, pawn.Position);
             int toBand = CompatReflection.BandOf(pawn.Map, landing);
-            SkipTransits.Clear(pawn);
 
+            // VEF's DoorTeleporter.Teleport is intentionally NOT called here on the same
+            // Map: it uses ExitMap/Spawn, clears every reservation and drops carried things.
+            // That is correct for a standalone teleporter job but destructive to the job
+            // whose path we are transparently shortening. We use VPE's real 16-tick effects
+            // and chosen landing cell, then RimWorld's supported same-map teleport reset.
             pawn.teleporting = true;
             try
             {
@@ -1067,23 +1196,16 @@ namespace AASBSkipdoorCompat
             {
                 pawn.teleporting = false;
             }
-
-            // We are suppressing vanilla PatherArrived because arrival at the source
-            // skipdoor is only an intermediate waypoint. PatherArrived normally begins
-            // with StopDead(), though, and skipping that cleanup leaves nextCell,
-            // nextCellCost and the old async path/request pointing at the entrance.
-            // After moving the pawn across the map, StartPath can then inherit that stale
-            // movement state: most trips self-heal, but some pawns remain Standing at the
-            // exit. Notify_Teleported(false) is vanilla's supported way to reset exactly
-            // this state without interrupting the current job; it calls
-            // Pawn_PathFollower.Notify_Teleported_Int -> StopDead + ResetToCurrentPosition.
             pawn.Notify_Teleported(endCurrentJob: false, resetTweenedPos: true);
+
+            CompatReflection.ClearSkipdoorEffecter(transit.Source, pawn);
+            SkipTransits.Clear(pawn);
 
             if (pawn.IsColonistPlayerControlled)
                 Log.Message("[AASB Skipdoor Compat] " + pawn.LabelShort
-                    + ": explicit skipdoor transit " + transit.Source.Position
+                    + ": native skipdoor transit completed " + transit.Source.Position
                     + " [band " + fromBand + "] -> " + landing + " [band " + toBand
-                    + "], pather reset; resuming path to " + realDest.Cell + ".");
+                    + "], resuming path to " + realDest.Cell + ".");
 
             pather.StartPath(realDest, realMode);
 
@@ -1091,8 +1213,6 @@ namespace AASBSkipdoorCompat
                 Log.Message("[AASB Skipdoor Compat] " + pawn.LabelShort
                     + ": post-transit resume issued; moving=" + pather.Moving
                     + ", destination=" + pather.Destination.Cell + ".");
-
-            return true;
         }
 
         private static IntVec3 FindLanding(Map map, IntVec3 center)
@@ -1111,6 +1231,26 @@ namespace AASBSkipdoorCompat
                     occupiedFallback = c;
             }
             return occupiedFallback;
+        }
+    }
+
+    [HarmonyPatch(typeof(Pawn_PathFollower), nameof(Pawn_PathFollower.PatherTick))]
+    internal static class Patch_PathFollower_TickSkipTransit
+    {
+        [HarmonyPriority(Priority.Last)]
+        private static void Postfix(Pawn_PathFollower __instance, Pawn ___pawn)
+        {
+            try
+            {
+                Patch_PathFollower_ConsumeSkipTransit.TickHoldingTransit(__instance, ___pawn);
+            }
+            catch (Exception e)
+            {
+                Log.Warning("[AASB Skipdoor Compat] Skipdoor transit tick failed: " + e);
+                CompatReflection.ClearSkipdoorEffecter(
+                    SkipTransits.TryGet(___pawn, out SkipTransit t) ? t.Source : null, ___pawn);
+                SkipTransits.Clear(___pawn);
+            }
         }
     }
 

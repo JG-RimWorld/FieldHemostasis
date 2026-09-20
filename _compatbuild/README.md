@@ -29,3 +29,7 @@ Fixes intermittent pawns remaining Standing immediately after an explicit skipdo
 
 ## v0.4.0
 Cross-band skipdoor segments now play the native VPE skipdoor sequence instead of jumping instantly. On reaching the source gate the pawn holds for the same 16-tick transit window used by VEF, calls the Skipdoor override of DoTeleportEffects each tick (native entry/exit flecks, sound, exit effecter and VPE-selected landing cell), then performs a safe same-map teleport reset and resumes the original job. The compat intentionally does not call VEF DoorTeleporter.Teleport on same-map travel because that method clears reservations, uses ExitMap/Spawn and drops carried things.
+
+
+## v0.4.1
+Executes Redux same-band skipdoor edges as real skipdoor transits. Redux still owns path selection; the compat only detects a non-adjacent consecutive skipdoor node in Pawn_PathFollower, cancels vanilla's collisionless Position jump, runs the native 16-tick VPE effects/landing sequence, resets the pather safely, and resumes the original destination.

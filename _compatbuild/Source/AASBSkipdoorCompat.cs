@@ -17,7 +17,7 @@ namespace AASBSkipdoorCompat
         {
             var harmony = new Harmony(content.PackageIdPlayerFacing);
             harmony.PatchAll();
-            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.4.0.");
+            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.4.1.");
             LongEventHandler.ExecuteWhenFinished(CompatReflection.Initialize);
         }
     }
@@ -185,6 +185,19 @@ namespace AASBSkipdoorCompat
             };
         }
 
+        public static bool BeginHolding(Pawn pawn, Thing source, Thing destination,
+            LocalTargetInfo realDestination, PathEndMode realEndMode)
+        {
+            Set(pawn, source, destination, realDestination, realEndMode);
+            if (!TryGet(pawn, out SkipTransit transit))
+                return false;
+
+            transit.HoldingAtSource = true;
+            transit.EffectTicksLeft = 15;
+            transit.EffectTargetCell = IntVec3.Invalid;
+            return true;
+        }
+
         public static void Clear(Pawn pawn)
         {
             if (pawn != null)
@@ -271,7 +284,7 @@ namespace AASBSkipdoorCompat
             }
             else
             {
-                Log.Message("[AASB Skipdoor Compat] Integration active v0.4.0.");
+                Log.Message("[AASB Skipdoor Compat] Integration active v0.4.1.");
             }
         }
 
@@ -1231,6 +1244,75 @@ namespace AASBSkipdoorCompat
                     occupiedFallback = c;
             }
             return occupiedFallback;
+        }
+    }
+
+    /// <summary>
+    /// Redux encodes a skipdoor jump directly in PawnPath as two consecutive gate cells.
+    /// Vanilla Pawn_PathFollower assumes consecutive path nodes are adjacent and would
+    /// eventually assign pawn.Position = nextCell, producing a long collisionless slide.
+    /// Intercept exactly that discontinuity after SetupMoveIntoNextCell has consumed the
+    /// remote gate node. Redux still chooses the route; we only execute its abstract edge
+    /// with the same native VPE transit sequence used for AASB cross-band hops.
+    /// </summary>
+    [HarmonyPatch(typeof(Pawn_PathFollower), "SetupMoveIntoNextCell")]
+    internal static class Patch_PathFollower_ExecuteReduxSkip
+    {
+        [HarmonyPriority(Priority.Last)]
+        private static void Postfix(Pawn_PathFollower __instance, Pawn ___pawn,
+            IntVec3 ___nextCell, PathEndMode ___peMode)
+        {
+            try
+            {
+                Pawn pawn = ___pawn;
+                if (pawn == null || !pawn.Spawned || pawn.Map == null
+                    || !__instance.Moving || !___nextCell.IsValid)
+                    return;
+
+                // AASB cross-band transit already has an explicit pending segment.
+                if (SkipTransits.TryGet(pawn, out _))
+                    return;
+
+                // A normal move, even into/out of a gate, remains vanilla movement.
+                int dx = Math.Abs(___nextCell.x - pawn.Position.x);
+                int dz = Math.Abs(___nextCell.z - pawn.Position.z);
+                if (dx <= 1 && dz <= 1)
+                    return;
+
+                Thing source = CompatReflection.SkipdoorAt(pawn.Map, pawn.Position);
+                Thing destination = CompatReflection.SkipdoorAt(pawn.Map, ___nextCell);
+                if (source == null || destination == null || source == destination)
+                    return;
+
+                // This hook is specifically Redux's same-band abstract edge. Cross-band
+                // movement belongs to the hybrid AASB planner and must not be stolen here.
+                int fromBand = CompatReflection.BandOf(pawn.Map, source.Position);
+                int toBand = CompatReflection.BandOf(pawn.Map, destination.Position);
+                if (fromBand != toBand)
+                    return;
+
+                LocalTargetInfo realDest = __instance.Destination;
+                if (!realDest.IsValid || !CompatReflection.CanUseSkipdoors(pawn, realDest))
+                    return;
+
+                // StopDead discards the already-consumed discontinuous PawnPath and resets
+                // nextCell/cost state before the 16-tick native skipdoor wind-up.
+                __instance.StopDead();
+                if (!SkipTransits.BeginHolding(pawn, source, destination, realDest, ___peMode))
+                    return;
+
+                if (pawn.IsColonistPlayerControlled)
+                    Log.Message("[AASB Skipdoor Compat] " + pawn.LabelShort
+                        + ": intercepted Redux same-band skipdoor edge "
+                        + source.Position + " -> " + destination.Position
+                        + "; beginning native 16-tick transit, final destination "
+                        + realDest.Cell + ".");
+            }
+            catch (Exception e)
+            {
+                Log.Warning("[AASB Skipdoor Compat] Redux skipdoor execution failed: " + e);
+                SkipTransits.Clear(___pawn);
+            }
         }
     }
 

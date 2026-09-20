@@ -21,3 +21,7 @@ Cross-band skipdoor travel no longer relies on a discontinuous PawnPath survivin
 
 ## v0.3.0
 Replaces the cross-band Redux path probe with a sparse hybrid graph. AASB stair/elevator anchors and skipdoors are planned together, while all skipdoors connect through one virtual hub instead of n(n-1)/2 gate pairs. The planner can therefore choose mixed routes such as skipdoor -> stairs or stairs -> skipdoor without requiring Redux to find an otherwise-unreachable cross-level destination. Only the winning skipdoor entry is verified with real same-band pathfinding before execution.
+
+
+## v0.3.1
+Fixes intermittent pawns remaining Standing immediately after an explicit skipdoor transit. The compat patch now uses RimWorld's own Notify_Teleported(endCurrentJob: false) after moving the pawn, which resets stale Pawn_PathFollower state (old path request, nextCell and movement costs) without interrupting the current job, then resumes the original destination.

@@ -17,7 +17,7 @@ namespace AASBSkipdoorCompat
         {
             var harmony = new Harmony(content.PackageIdPlayerFacing);
             harmony.PatchAll();
-            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.4.1.");
+            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.4.2.");
             LongEventHandler.ExecuteWhenFinished(CompatReflection.Initialize);
         }
     }
@@ -234,10 +234,17 @@ namespace AASBSkipdoorCompat
         private static MethodInfo doTeleportEffects;
         private static FieldInfo teleportEffecters;
 
-        public static bool Ready => initialized && canUseTeleporters != null && getAllTeleporters != null
-            && tryGetTransit != null && bandsBanded != null && bandsBandOf != null
-            && componentOfPawn != null && wormholeByMap != null && doorTeleporterType != null
-            && doTeleportEffects != null;
+        // Only capabilities required by the HYBRID PLANNER belong in Ready.
+        // Optional execution helpers (AASB TryGetTransit and VEF DoTeleportEffects)
+        // must not disable route selection if an upstream version changes their signature.
+        public static bool Ready => initialized
+            && canUseTeleporters != null
+            && getAllTeleporters != null
+            && bandsBanded != null
+            && bandsBandOf != null
+            && componentOfPawn != null
+            && wormholeByMap != null
+            && doorTeleporterType != null;
 
         public static void Initialize()
         {
@@ -277,14 +284,24 @@ namespace AASBSkipdoorCompat
 
             if (!Ready)
             {
-                Log.Warning("[AASB Skipdoor Compat] Could not resolve all integration methods. "
-                    + "Patch will stay passive. AASB=" + (wormhole != null)
-                    + ", Redux=" + (pathUtils != null)
-                    + ", VEF=" + (doorTeleporterType != null) + ".");
+                Log.Warning("[AASB Skipdoor Compat] Hybrid planner unavailable. "
+                    + "canUseTeleporters=" + (canUseTeleporters != null)
+                    + ", getAllTeleporters=" + (getAllTeleporters != null)
+                    + ", bandsBanded=" + (bandsBanded != null)
+                    + ", bandsBandOf=" + (bandsBandOf != null)
+                    + ", componentOfPawn=" + (componentOfPawn != null)
+                    + ", wormholeByMap=" + (wormholeByMap != null)
+                    + ", doorTeleporterType=" + (doorTeleporterType != null)
+                    + ". Optional: tryGetTransit=" + (tryGetTransit != null)
+                    + ", doTeleportEffects=" + (doTeleportEffects != null)
+                    + ", teleportEffecters=" + (teleportEffecters != null) + ".");
             }
             else
             {
-                Log.Message("[AASB Skipdoor Compat] Integration active v0.4.1.");
+                Log.Message("[AASB Skipdoor Compat] Integration active v0.4.2. "
+                    + "Optional helpers: tryGetTransit=" + (tryGetTransit != null)
+                    + ", doTeleportEffects=" + (doTeleportEffects != null)
+                    + ", teleportEffecters=" + (teleportEffecters != null) + ".");
             }
         }
 

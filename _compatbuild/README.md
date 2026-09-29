@@ -33,3 +33,7 @@ Cross-band skipdoor segments now play the native VPE skipdoor sequence instead o
 
 ## v0.4.1
 Executes Redux same-band skipdoor edges as real skipdoor transits. Redux still owns path selection; the compat only detects a non-adjacent consecutive skipdoor node in Pawn_PathFollower, cancels vanilla's collisionless Position jump, runs the native 16-tick VPE effects/landing sequence, resets the pather safely, and resumes the original destination.
+
+
+## v0.4.2
+Fixes the hybrid planner being disabled by optional reflection helpers. Planner readiness now depends only on the APIs actually required to combine bands/components, AASB stair pairs and Redux skipdoors. A missing legacy AASB TryGetTransit helper or VEF DoTeleportEffects no longer disables cross-band route comparison. Startup diagnostics now report every resolved capability individually.

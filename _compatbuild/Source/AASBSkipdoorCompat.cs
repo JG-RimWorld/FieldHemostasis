@@ -17,7 +17,7 @@ namespace AASBSkipdoorCompat
         {
             var harmony = new Harmony(content.PackageIdPlayerFacing);
             harmony.PatchAll();
-            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.4.2.");
+            Log.Message("[AASB Skipdoor Compat] Harmony patches installed v0.4.3.");
             LongEventHandler.ExecuteWhenFinished(CompatReflection.Initialize);
         }
     }
@@ -198,6 +198,20 @@ namespace AASBSkipdoorCompat
             return true;
         }
 
+        public static bool HoldingForCurrentJob(Pawn pawn)
+        {
+            if (!TryGet(pawn, out SkipTransit transit) || !transit.HoldingAtSource)
+                return false;
+
+            if (transit.Job != null && pawn.CurJob != transit.Job)
+            {
+                Clear(pawn);
+                return false;
+            }
+
+            return true;
+        }
+
         public static void Clear(Pawn pawn)
         {
             if (pawn != null)
@@ -298,7 +312,7 @@ namespace AASBSkipdoorCompat
             }
             else
             {
-                Log.Message("[AASB Skipdoor Compat] Integration active v0.4.2. "
+                Log.Message("[AASB Skipdoor Compat] Integration active v0.4.3. "
                     + "Optional helpers: tryGetTransit=" + (tryGetTransit != null)
                     + ", doTeleportEffects=" + (doTeleportEffects != null)
                     + ", teleportEffecters=" + (teleportEffecters != null) + ".");
@@ -336,6 +350,23 @@ namespace AASBSkipdoorCompat
                     return thing;
             }
             return null;
+        }
+
+        public static bool HasTeleportLanding(Map map, IntVec3 doorCell)
+        {
+            if (map == null || !doorCell.IsValid || !doorCell.InBounds(map))
+                return false;
+
+            // Match VPE Skipdoor.DoTeleportEffects exactly: the destination is usable
+            // only if at least one cardinal adjacent cell is Standable. Occupancy is not
+            // part of VPE's own test, so do not make the pathing rule stricter here.
+            for (int i = 0; i < GenAdj.CardinalDirections.Length; i++)
+            {
+                IntVec3 c = doorCell + GenAdj.CardinalDirections[i];
+                if (c.InBounds(map) && c.Standable(map))
+                    return true;
+            }
+            return false;
         }
 
         public static int ComponentOf(Map map, IntVec3 cell, Pawn pawn)
@@ -465,7 +496,7 @@ namespace AASBSkipdoorCompat
                 {
                     foreach (object value in values)
                     {
-                        if (value is IntVec3 cell)
+                        if (value is IntVec3 cell && HasTeleportLanding(map, cell))
                             result.Add(cell);
                     }
                 }
@@ -1053,6 +1084,16 @@ namespace AASBSkipdoorCompat
                 if (SkipTransits.TryGet(pawn, out existing))
                 {
                     bool sameJob = existing.Job == null || pawn.CurJob == existing.Job;
+
+                    // Once the pawn has reached the source gate, the 16-tick skipdoor
+                    // sequence owns movement. Some JobDrivers reissue StartPath every tick;
+                    // never let those calls erase/restart an in-flight transit.
+                    if (sameJob && existing.HoldingAtSource)
+                    {
+                        __result = false;
+                        return false;
+                    }
+
                     bool ourLeg = sameJob && existing.Source != null && existing.Source.Spawned
                         && dest.IsValid && dest.Cell.InHorDistOf(existing.Source.Position, 2f);
                     if (ourLeg)
@@ -1184,6 +1225,19 @@ namespace AASBSkipdoorCompat
                 return;
             }
 
+            if (!CompatReflection.HasTeleportLanding(pawn.Map, transit.Destination.Position))
+            {
+                if (pawn.IsColonistPlayerControlled)
+                    Log.Warning("[AASB Skipdoor Compat] " + pawn.LabelShort
+                        + ": skipdoor destination " + transit.Destination.Position
+                        + " has no standable cardinal landing; aborting this transit and replanning.");
+
+                CompatReflection.ClearSkipdoorEffecter(transit.Source, pawn);
+                SkipTransits.Clear(pawn);
+                pather.StartPath(realDest, realMode);
+                return;
+            }
+
             int ticks = transit.EffectTicksLeft;
             IntVec3 targetCell = transit.EffectTargetCell;
             bool effectsOk = CompatReflection.RunSkipdoorEffects(transit.Source, pawn, ticks,
@@ -1261,6 +1315,43 @@ namespace AASBSkipdoorCompat
                     occupiedFallback = c;
             }
             return occupiedFallback;
+        }
+    }
+
+    [HarmonyPatch(typeof(Pawn_PathFollower), nameof(Pawn_PathFollower.StartPath))]
+    internal static class Patch_PathFollower_HoldSkipTransit
+    {
+        // Run before AASB's StartPath segmentation prefix. During the native 16-tick
+        // skipdoor wind-up, repeated StartPath calls from the SAME job must not replace
+        // the stopped pather or restart the transit. A real job change clears the hold.
+        [HarmonyPriority(Priority.First)]
+        private static bool Prefix(Pawn ___pawn)
+        {
+            return !SkipTransits.HoldingForCurrentJob(___pawn);
+        }
+    }
+
+    [HarmonyPatch]
+    internal static class Patch_Redux_FilterUnlandableSkipdoors
+    {
+        private static MethodBase TargetMethod()
+        {
+            Type t = AccessTools.TypeByName("VPE_Skipdoor_Pathing.PathfindingUtils");
+            return AccessTools.Method(t, "GetAllTeleporters", new[] { typeof(Map) });
+        }
+
+        // Redux models skipdoors as symmetric graph nodes, while VPE requires the
+        // DESTINATION gate to have at least one standable cardinal landing cell.
+        // A gate that cannot be exited therefore cannot safely participate in Redux
+        // auto-pathing at all. Manual VEF/VPE use is untouched; this filters only the
+        // pathing utility's list.
+        [HarmonyPriority(Priority.Last)]
+        private static void Postfix(Map map, ref IEnumerable<IntVec3> __result)
+        {
+            if (map == null || __result == null)
+                return;
+
+            __result = __result.Where(c => CompatReflection.HasTeleportLanding(map, c)).ToList();
         }
     }
 

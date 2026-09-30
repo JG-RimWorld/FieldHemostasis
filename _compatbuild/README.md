@@ -37,3 +37,7 @@ Executes Redux same-band skipdoor edges as real skipdoor transits. Redux still o
 
 ## v0.4.2
 Fixes the hybrid planner being disabled by optional reflection helpers. Planner readiness now depends only on the APIs actually required to combine bands/components, AASB stair pairs and Redux skipdoors. A missing legacy AASB TryGetTransit helper or VEF DoTeleportEffects no longer disables cross-band route comparison. Startup diagnostics now report every resolved capability individually.
+
+
+## v0.4.3
+Prevents infinite skipdoor restart loops. Redux auto-pathing now excludes skipdoors that have no standable cardinal landing cell, matching the requirement in VPE Skipdoor.DoTeleportEffects. In-flight 16-tick skipdoor holds are also protected from repeated StartPath calls issued by the same job, while a real job change still cancels the transit. A defensive execution check aborts and replans if a destination becomes unlandable after routing.
